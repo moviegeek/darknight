@@ -1,0 +1,3 @@
+package torrent
+
+func NewTorrentClient()
