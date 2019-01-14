@@ -1,3 +1,0 @@
-package torrent
-
-func NewTorrentClient()
