@@ -1,0 +1,51 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply min-h-screen bg-bg text-ink antialiased;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+      "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-bg;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-border;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-ink-dim;
+  }
+}
+
+@layer components {
+  .badge {
+    @apply inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide;
+  }
+  .badge-res {
+    @apply bg-blue-900/60 text-blue-200;
+  }
+  .badge-hdr {
+    @apply bg-amber-900/60 text-amber-200;
+  }
+  .badge-dv {
+    @apply bg-purple-900/60 text-purple-200;
+  }
+  .badge-disc {
+    @apply bg-emerald-900/60 text-emerald-200;
+  }
+  .badge-sub {
+    @apply bg-cyan-900/60 text-cyan-200;
+  }
+  .chip {
+    @apply inline-flex cursor-pointer items-center gap-1 rounded-full border border-border bg-bg-card px-3 py-1 text-xs text-ink-muted transition hover:border-ink-dim hover:text-ink;
+  }
+  .chip-active {
+    @apply border-accent bg-accent/10 text-accent;
+  }
+}

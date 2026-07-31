@@ -4,9 +4,35 @@
 *.dll
 *.so
 *.dylib
+/darknight
+/bin/
 
 # Test binary, build with `go test -c`
 *.test
 
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
+
+# SQLite runtime database and wal/shm files
+*.db
+*.db-wal
+*.db-shm
+
+# Local config (may contain API keys)
+config.local.yaml
+.env
+.env.local
+
+# Frontend build output (embedded at build time). The placeholder index.html
+# is kept in version control so `go build` works without running the frontend
+# build first; real builds overwrite it.
+web/dist/*
+!web/dist/index.html
+web/node_modules
+web/tsconfig.tsbuildinfo
+web/.vite
+
+# Editor / OS cruft
+.DS_Store
+.idea/
+.vscode/
