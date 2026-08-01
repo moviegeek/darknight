@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"io/fs"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -30,8 +32,14 @@ type Store struct {
 
 // Open opens (or creates) the SQLite database at path and runs all pending
 // migrations. The DSN enables WAL mode and reasonable busy/timeout settings
-// for a single-process application.
+// for a single-process application. The parent directory is created if
+// missing so a default like ".data/darknight.db" works on first run.
 func Open(ctx context.Context, path string) (*Store, error) {
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("create db dir %s: %w", dir, err)
+		}
+	}
 	dsn := buildDSN(path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {

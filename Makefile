@@ -2,7 +2,7 @@
 .PHONY: all backend frontend dev build test vet fmt clean
 
 # Dev defaults. Override on the command line, e.g. `make dev DARKNIGHT_DB=/tmp/x.db`.
-DARKNIGHT_DB ?= darknight.db
+DARKNIGHT_DB ?= .data/darknight.db
 DARKNIGHT_ADDR ?= :8080
 
 all: backend frontend

@@ -74,7 +74,7 @@ Docker required at runtime — only `ffmpeg`/`ffprobe` on PATH for scanning.
 
 ```bash
 make build                    # builds web/dist then bin/darknight
-./bin/darknight               # serves on :8080, db at ./darknight.db
+./bin/darknight               # serves on :8080, db at ./.data/darknight.db
 ```
 
 Open http://localhost:8080, go to **设置**, add a media library root path
@@ -98,7 +98,7 @@ All via environment variables:
 
 | Var | Default | Purpose |
 |---|---|---|
-| `DARKNIGHT_DB` | `darknight.db` | SQLite database path |
+| `DARKNIGHT_DB` | `.data/darknight.db` | SQLite database path |
 | `DARKNIGHT_ADDR` | `:8080` | HTTP listen address |
 | `TMDB_API_KEY` | _(empty)_ | enables TMDB metadata enrichment |
 | `TMDB_LANGUAGE` | `en-US` | primary locale for TMDB text (overview, localized title) |

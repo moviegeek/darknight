@@ -41,7 +41,7 @@ type Config struct {
 // Load reads configuration from environment variables.
 func Load() (*Config, error) {
 	c := &Config{
-		DatabasePath: envStr("DARKNIGHT_DB", "darknight.db"),
+		DatabasePath: envStr("DARKNIGHT_DB", ".data/darknight.db"),
 		HTTPAddr:     envStr("DARKNIGHT_ADDR", ":8080"),
 		TMDBAPIKey:    envStr("TMDB_API_KEY", ""),
 		TMDBLanguage:  envStr("TMDB_LANGUAGE", "en-US"),
