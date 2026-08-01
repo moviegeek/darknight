@@ -5,14 +5,13 @@ import { getMovieFacets, listCountries, listMovies } from "../api/client";
 import type { MovieQuery } from "../api/types";
 import { FilterPanel } from "../components/FilterPanel";
 import { MovieCard } from "../components/MovieCard";
+import { useLibraryQuery } from "../lib/useLibraryQuery";
 
 export default function LibraryPage() {
-  const [query, setQuery] = useState<MovieQuery>({
-    sort: "title",
-    // 0 means "no limit" - the backend returns every matching movie.
-    limit: 0,
-    offset: 0,
-  });
+  // The query is persisted to localStorage so the user's selected filters and
+  // sort survive opening a movie's detail page and navigating back (which
+  // unmounts this component and would otherwise reset useState).
+  const [query, setQuery] = useLibraryQuery();
   const [cardSize, setCardSize] = useState(160);
   const [showCounts, setShowCounts] = useState(true);
 
