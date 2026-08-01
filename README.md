@@ -94,10 +94,17 @@ Open http://localhost:5173.
 
 ## Configuration
 
+On startup the server first loads a `.env` file (if present) and applies its
+`KEY=VALUE` pairs as defaults, then reads the real environment variables,
+which take precedence. The `.env` file is looked for in the current working
+directory or next to the executable; set `DARKNIGHT_ENV_FILE` to point at a
+specific file instead. A missing file is silently ignored.
+
 All via environment variables:
 
 | Var | Default | Purpose |
 |---|---|---|
+| `DARKNIGHT_ENV_FILE` | _(empty)_ | explicit `.env` file path (else `./.env` or next to the binary) |
 | `DARKNIGHT_DB` | `.data/darknight.db` | SQLite database path |
 | `DARKNIGHT_ADDR` | `:8080` | HTTP listen address |
 | `TMDB_API_KEY` | _(empty)_ | enables TMDB metadata enrichment |

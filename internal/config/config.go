@@ -38,8 +38,17 @@ type Config struct {
 	LogLevel string
 }
 
-// Load reads configuration from environment variables.
+// Load reads configuration from environment variables. Before reading them it
+// loads a .env file (if present) and applies its values as defaults, so real
+// environment variables still take precedence. The .env file is searched for
+// in the current directory or next to the executable; an explicit location can
+// be set with DARKNIGHT_ENV_FILE.
 func Load() (*Config, error) {
+	for _, p := range envFileLocations(os.Getenv("DARKNIGHT_ENV_FILE")) {
+		if err := loadDotEnv(p); err != nil {
+			return nil, fmt.Errorf("load env file %s: %w", p, err)
+		}
+	}
 	c := &Config{
 		DatabasePath: envStr("DARKNIGHT_DB", ".data/darknight.db"),
 		HTTPAddr:     envStr("DARKNIGHT_ADDR", ":8080"),
