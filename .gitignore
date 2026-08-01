@@ -5,6 +5,7 @@
 *.so
 *.dylib
 .data/
+refs/
 /darknight
 /bin/
 
