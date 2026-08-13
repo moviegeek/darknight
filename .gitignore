@@ -38,3 +38,4 @@ web/.vite
 .DS_Store
 .idea/
 .vscode/
+.zcode/

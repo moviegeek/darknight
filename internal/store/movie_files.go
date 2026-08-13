@@ -14,7 +14,7 @@ import (
 // decide between insert and update.
 func (s *Store) FindMovieFileByRelease(ctx context.Context, libraryID int64, dirPath string) (*model.MovieFile, error) {
 	row := s.DB.QueryRowContext(ctx, `
-SELECT id, movie_id, library_id, dir_path, file_name, is_disc, file_size, file_modified,
+SELECT id, movie_id, library_id, '' AS library_name, dir_path, file_name, is_disc, file_size, file_modified,
   release_group, edition, source, resolution, video_codec, audio_codec, audio_channels,
   hdr, dolby_vision, bit_depth, audio_count, language, is_collection, raw_name,
   duration_sec, video_bitrate, frame_rate, width, height, container,
@@ -116,7 +116,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
 // FileName.
 func (s *Store) ListMovieFilesForReprobe(ctx context.Context, version int) ([]model.MovieFile, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-SELECT id, movie_id, library_id, dir_path, file_name, is_disc, file_size, file_modified,
+SELECT id, movie_id, library_id, '' AS library_name, dir_path, file_name, is_disc, file_size, file_modified,
   release_group, edition, source, resolution, video_codec, audio_codec, audio_channels,
   hdr, dolby_vision, bit_depth, audio_count, language, is_collection, raw_name,
   duration_sec, video_bitrate, frame_rate, width, height, container,

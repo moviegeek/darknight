@@ -135,7 +135,7 @@ func (sc *Scanner) ScanLibrary(ctx context.Context, lib *model.Library) (Stats, 
 		sc.Logger.Debug("found release", "dir", rel, "kind", kindString(kind), "main", release)
 		seen = append(seen, rel)
 
-		added, updated, unchanged, err := sc.scanRelease(ctx, lib, path, rel, release, kind, false)
+		added, updated, unchanged, err := sc.scanRelease(ctx, lib, path, rel, release, kind)
 		switch {
 		case err != nil:
 			stats.Errors++
@@ -169,57 +169,6 @@ func (sc *Scanner) ScanLibrary(ctx context.Context, lib *model.Library) (Stats, 
 	}
 	// WAL checkpoint so the scan results are immediately visible in the main
 	// database file, even if the process is still running.
-	if err := sc.Store.Checkpoint(ctx); err != nil {
-		sc.Logger.Warn("checkpoint", "err", err)
-	}
-	return stats, nil
-}
-
-// RescanMovie re-scans every on-disk release backing a movie, forcing a full
-// re-probe regardless of whether the main file's size/mtime changed. It is
-// the "refresh" UI action's disk-side counterpart to Enricher.EnrichMovie:
-// picks up video-file replacements and subtitle-only edits (new/removed
-// .srt, embedded subtitle changes) without waiting for the next full
-// library scan.
-func (sc *Scanner) RescanMovie(ctx context.Context, movieID int64) (Stats, error) {
-	var stats Stats
-	files, err := sc.Store.ListMovieFiles(ctx, movieID)
-	if err != nil {
-		return stats, err
-	}
-	libs := make(map[int64]*model.Library)
-	for _, mf := range files {
-		lib, ok := libs[mf.LibraryID]
-		if !ok {
-			lib, err = sc.Store.GetLibrary(ctx, mf.LibraryID)
-			if err != nil {
-				stats.Errors++
-				sc.Logger.Warn("rescan movie: get library", "movie_file", mf.ID, "err", err)
-				continue
-			}
-			libs[mf.LibraryID] = lib
-		}
-		absDir := filepath.Join(lib.RootPath, mf.DirPath)
-		kind := kindFile
-		mainFile := ""
-		if mf.IsDisc {
-			kind = kindDisc
-		} else {
-			mainFile = filepath.Join(absDir, mf.FileName)
-		}
-		added, updated, unchanged, err := sc.scanRelease(ctx, lib, absDir, mf.DirPath, mainFile, kind, true)
-		switch {
-		case err != nil:
-			stats.Errors++
-			sc.Logger.Warn("rescan release", "dir", absDir, "err", err)
-		case added:
-			stats.Added++
-		case updated:
-			stats.Updated++
-		case unchanged:
-			stats.Unchanged++
-		}
-	}
 	if err := sc.Store.Checkpoint(ctx); err != nil {
 		sc.Logger.Warn("checkpoint", "err", err)
 	}
@@ -299,15 +248,11 @@ func classifyRelease(dir string) (mainFile string, kind releaseKind, ok bool) {
 
 // scanRelease parses one release dir and upserts its movie_file. Returns
 // (added, updated, unchanged, err). When unchanged, ffprobe and the
-// audio/subtitle rewrite are skipped entirely. force bypasses the
-// size/mtime incremental check so the release is always fully re-probed and
-// its audio/subtitle rows always rewritten - used by the manual "rescan
-// movie" action so subtitle-only changes (no video file change) are picked
-// up without waiting for the next full library scan.
+// audio/subtitle rewrite are skipped entirely.
 func (sc *Scanner) scanRelease(
 	ctx context.Context,
 	lib *model.Library,
-	absDir, relDir, mainFile string, kind releaseKind, force bool,
+	absDir, relDir, mainFile string, kind releaseKind,
 ) (bool, bool, bool, error) {
 	dirName := filepath.Base(absDir)
 	meta := parser.ParseTitle(dirName)
@@ -339,7 +284,7 @@ func (sc *Scanner) scanRelease(
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return false, false, false, err
 	}
-	unchanged := !force && existing != nil &&
+	unchanged := existing != nil &&
 		existing.FileSize == size &&
 		existing.FileModified == mtime &&
 		existing.DurationSec != 0 && // never skip probing a never-probed file
@@ -459,6 +404,12 @@ func buildMovieFile(lib *model.Library, relDir, mainFile string, kind releaseKin
 	mf.AudioCount = meta.AudioCount
 	mf.Language = meta.Language
 	mf.IsCollection = meta.IsCollection
+	if kind == kindDisc {
+		// A BDMV folder is an original Blu-ray disc, not a rip - override
+		// whatever source the filename parser inferred (usually BluRay) so
+		// disc releases are distinguishable in filters and the UI.
+		mf.Source = string(parser.BlurayDisk)
+	}
 	return mf
 }
 
@@ -493,7 +444,7 @@ func (sc *Scanner) upsertMovieFromRelease(ctx context.Context, mf *model.MovieFi
 		return 0, nil
 	}
 	m.SortTitle = sortTitle(m.Title)
-	if err := sc.Store.UpsertMovie(ctx, m); err != nil {
+	if err := sc.Store.UpsertMovieSeed(ctx, m); err != nil {
 		return 0, err
 	}
 	sc.Logger.Debug("upsert movie", "title", m.Title, "year", m.Year, "movie_id", m.ID)

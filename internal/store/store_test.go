@@ -104,6 +104,112 @@ func TestUpsertMovie_Idempotent(t *testing.T) {
 	}
 }
 
+// TestUpsertMovieSeed_MatchesEnrichedRow reproduces the duplicate-movie bug:
+// the enricher overwrote title with the TMDB original title and kept the
+// parsed English name only in title_en. A re-scan reparsing the English name
+// must match the enriched row by title_en instead of inserting a duplicate.
+func TestUpsertMovieSeed_MatchesEnrichedRow(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	// enriched row, as the TMDB enricher would leave it
+	enriched := &model.Movie{
+		Title:         "十三人の刺客",
+		OriginalTitle: "十三人の刺客",
+		TitleEn:       "13 Assassins",
+		Year:          2010, TMDBID: 58857, IMDBID: "tt1436045",
+		PosterPath: "/yUsVsiVXUwClk4vSCx80vrdO6MV.jpg", Synopsis: "samurai",
+	}
+	if err := s.UpsertMovie(ctx, enriched); err != nil {
+		t.Fatalf("insert enriched: %v", err)
+	}
+	enrichedID := enriched.ID
+
+	// scanner re-parses the English name from the dir; no ids.
+	seed := &model.Movie{Title: "13 Assassins", Year: 2010}
+	if err := s.UpsertMovieSeed(ctx, seed); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if seed.ID != enrichedID {
+		t.Fatalf("seed should match enriched row %d, got %d", enrichedID, seed.ID)
+	}
+
+	// enriched display fields must be untouched by the seed update.
+	got, err := s.GetMovie(ctx, enrichedID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Title != "十三人の刺客" || got.TitleEn != "13 Assassins" ||
+		got.PosterPath != "/yUsVsiVXUwClk4vSCx80vrdO6MV.jpg" || got.Synopsis != "samurai" {
+		t.Fatalf("enriched fields clobbered by seed: %+v", got)
+	}
+
+	// no duplicate row should have been created.
+	var n int
+	if err := s.DB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM movies WHERE year = 2010`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 row for year 2010, got %d", n)
+	}
+}
+
+// TestUpsertMovieSeed_MatchesByOriginalTitle covers the symmetric case: the
+// parsed title is the English name, but the stored row carries it in
+// original_title (not title_en).
+func TestUpsertMovieSeed_MatchesByOriginalTitle(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	enriched := &model.Movie{
+		Title:         "大撒把",
+		OriginalTitle: "After Separation",
+		TitleEn:       "After Separation",
+		Year:          1992, TMDBID: 296147,
+	}
+	if err := s.UpsertMovie(ctx, enriched); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	seed := &model.Movie{Title: "After Separation", Year: 1992}
+	if err := s.UpsertMovieSeed(ctx, seed); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if seed.ID != enriched.ID {
+		t.Fatalf("seed should match by original_title, got %d want %d", seed.ID, enriched.ID)
+	}
+}
+
+// TestUpsertMovieSeed_UpdatesUnenrichedRow verifies the seed path still
+// updates a matched row that has no tmdb_id (first-time seed before enrich,
+// or offline mode), so re-scans pick up corrected parse fields.
+func TestUpsertMovieSeed_UpdatesUnenrichedRow(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	first := &model.Movie{Title: "Casino", Year: 1995}
+	if err := s.UpsertMovie(ctx, first); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	// re-scan with a richer parse (runtime via .nfo); row has no tmdb_id yet.
+	seed := &model.Movie{Title: "Casino", Year: 1995, Runtime: 178, IMDBID: "tt0112641"}
+	if err := s.UpsertMovieSeed(ctx, seed); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if seed.ID != first.ID {
+		t.Fatalf("seed should match existing row, got %d want %d", seed.ID, first.ID)
+	}
+	got, err := s.GetMovie(ctx, first.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Runtime != 178 || got.IMDBID != "tt0112641" {
+		t.Fatalf("unenriched row not updated: %+v", got)
+	}
+}
+
 func TestMovieFileUpsertAndTracks(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)

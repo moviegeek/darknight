@@ -14,7 +14,8 @@ import type {
   MovieFileDetail,
   MovieListResponse,
   MovieQuery,
-  ScanStats,
+  SqlResult,
+  TableInfo,
 } from "./types";
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
@@ -65,12 +66,6 @@ export const getMovieFacets = (q: MovieQuery) =>
   http<MovieFacets>(`/api/movies/facets${qs(q)}`);
 export const getMovieCast = (id: number) =>
   http<CastResponse>(`/api/movies/${id}/cast`);
-export const enrichMovie = (id: number) =>
-  http<{ refreshed: boolean; movie: MovieDetail }>(`/api/movies/${id}/enrich`, {
-    method: "POST",
-  });
-export const rescanMovie = (id: number) =>
-  http<ScanStats>(`/api/movies/${id}/rescan`, { method: "POST" });
 export const listMovieFiles = (id: number) =>
   http<MovieFile[]>(`/api/movies/${id}/files`);
 export const getMovieFile = (movieId: number, fileId: number) =>
@@ -99,3 +94,12 @@ export const enrichCollection = (id: number) =>
 // the result is logged server-side. 409 means one is already running.
 export const enrichAllCollections = () =>
   http<{ status: string }>(`/api/collections/enrich-all`, { method: "POST" });
+
+// ----- SQL console -----
+export const listTables = () => http<TableInfo[]>("/api/dev/tables");
+export const execSQL = (sql: string, write: boolean) =>
+  http<SqlResult>("/api/dev/sql", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sql, write }),
+  });

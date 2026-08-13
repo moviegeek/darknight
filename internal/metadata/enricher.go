@@ -59,7 +59,7 @@ func (e *Enricher) EnrichMovie(ctx context.Context, m *model.Movie) (bool, error
 }
 
 // EnrichMovieForce is EnrichMovie but bypasses the local TMDB cache - used by
-// the manual "refresh metadata" UI action.
+// the CLI reenrich command.
 func (e *Enricher) EnrichMovieForce(ctx context.Context, m *model.Movie) (bool, error) {
 	return e.enrich(ctx, m, true)
 }

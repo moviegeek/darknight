@@ -103,6 +103,7 @@ type MovieFile struct {
 	ID            int64   `json:"id"`
 	MovieID       int64   `json:"movie_id"`
 	LibraryID     int64   `json:"library_id"`
+	LibraryName   string  `json:"library_name"`
 	DirPath       string  `json:"dir_path"`
 	FileName      string  `json:"file_name"`
 	IsDisc        bool    `json:"is_disc"`

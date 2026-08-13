@@ -1,11 +1,11 @@
-import { Eye, EyeOff, Search, X } from "lucide-react";
-import { cn, countryFlagEmoji } from "../lib/format";
+import { Eye, EyeOff, RotateCcw, Search, X } from "lucide-react";
+import { cn, countryFlagEmoji, sourceLabel } from "../lib/format";
 import type { CountryCount, MovieFacets, MovieQuery } from "../api/types";
 
 // The fixed filter dimensions surfaced to the user. Each is a single-select
 // chip group; "all" clears it.
 const RESOLUTIONS = ["2160p", "1080p", "720p"];
-const SOURCES = ["BluRay", "UHD BluRay", "WebDL", "HDTV"];
+const SOURCES = ["BluRay", "UHD BluRay", "Bluray Disk", "WebDL", "HDTV"];
 const CODECS = ["x265", "x264", "AVC", "HEVC"];
 const HDRS = ["HDR10", "HDR10+", "DV"];
 // Countries get their own chip once the library has at least this many
@@ -43,6 +43,22 @@ export function FilterPanel({
   countries: CountryCount[];
 }) {
   const set = (patch: Partial<MovieQuery>) => onChange({ ...query, ...patch });
+  // reset() clears every filter dimension while keeping sort/order and the
+  // limit/offset view state.
+  const reset = () =>
+    onChange({ sort: query.sort, desc: query.desc, limit: query.limit, offset: 0 });
+  const hasFilters =
+    query.q !== undefined ||
+    query.resolution !== undefined ||
+    query.source !== undefined ||
+    query.codec !== undefined ||
+    query.hdr !== undefined ||
+    query.dolby_vision !== undefined ||
+    query.country !== undefined ||
+    query.subtitle_lang !== undefined ||
+    query.external_subtitle !== undefined ||
+    query.no_chi_subtitle !== undefined ||
+    query.watched !== undefined;
   // count(dimension, value) looks up the facet count for one chip; undefined
   // when counts are hidden or the facets request hasn't resolved yet, in
   // which case Chip renders without a "(N)" suffix.
@@ -83,6 +99,15 @@ export function FilterPanel({
             </button>
           )}
         </div>
+        {hasFilters && (
+          <button
+            onClick={reset}
+            className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-md border border-border py-1.5 text-xs text-ink-muted hover:text-ink"
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            重置筛选
+          </button>
+        )}
       </div>
 
       <button
@@ -114,7 +139,7 @@ export function FilterPanel({
             count={count("source", s)}
             onClick={() => set({ source: query.source === s ? undefined : s, offset: 0 })}
           >
-            {s}
+            {sourceLabel(s)}
           </Chip>
         ))}
       </FilterGroup>

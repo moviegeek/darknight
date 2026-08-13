@@ -61,8 +61,6 @@ func (a *API) Router() http.Handler {
 	r.Get("/movies/facets", a.movieFacets)
 	r.Get("/movies/{id}", a.getMovie)
 	r.Get("/movies/{id}/cast", a.getMovieCast)
-	r.Post("/movies/{id}/enrich", a.enrichMovie)
-	r.Post("/movies/{id}/rescan", a.rescanMovie)
 	r.Get("/movies/{id}/files", a.listMovieFiles)
 	r.Get("/movies/{id}/files/{fid}", a.getMovieFile)
 
@@ -73,6 +71,9 @@ func (a *API) Router() http.Handler {
 	r.Get("/collections/{id}/parts", a.listCollectionParts)
 	r.Post("/collections/{id}/enrich", a.enrichCollection)
 	r.Post("/collections/enrich-all", a.enrichAllCollections)
+
+	r.Get("/dev/tables", a.listTables)
+	r.Post("/dev/sql", a.execSQL)
 	return r
 }
 
@@ -371,7 +372,7 @@ func (a *API) listMovies(w http.ResponseWriter, r *http.Request) {
 // dynamic list instead of a fixed one.
 var (
 	facetResolutions = []string{"2160p", "1080p", "720p"}
-	facetSources     = []string{"BluRay", "UHD BluRay", "WebDL", "HDTV"}
+	facetSources     = []string{"BluRay", "UHD BluRay", "Bluray Disk", "WebDL", "HDTV"}
 	facetCodecs      = []string{"x265", "x264", "AVC", "HEVC"}
 	facetHDRs        = []string{"HDR10", "HDR10+", "DV"}
 	facetSubLangs    = []string{"chi", "eng", "jpn", "kor"}
@@ -534,65 +535,6 @@ func (a *API) getMovieCast(w http.ResponseWriter, r *http.Request) {
 		"crew":   crew,
 		"people": people,
 	})
-}
-
-// enrichMovie triggers an on-demand TMDB refresh for one movie. Useful from the
-// UI ("refresh metadata" button) without a full rescan.
-func (a *API) enrichMovie(w http.ResponseWriter, r *http.Request) {
-	id, err := parseInt64(r, "id")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if a.Enricher == nil || !a.Enricher.Enabled() {
-		writeError(w, http.StatusServiceUnavailable, "tmdb enrichment not configured")
-		return
-	}
-	m, err := a.Store.GetMovie(r.Context(), id)
-	if errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "movie not found")
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	// force a cache bypass so the manual action always hits TMDB fresh
-	refreshed, err := a.Enricher.EnrichMovieForce(r.Context(), m)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "tmdb: "+err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"refreshed": refreshed,
-		"movie":     m,
-	})
-}
-
-// rescanMovie re-scans the on-disk release(s) backing one movie, forcing a
-// full re-probe so a file replacement or a subtitle-only edit is picked up
-// immediately instead of waiting for the next full library scan.
-func (a *API) rescanMovie(w http.ResponseWriter, r *http.Request) {
-	id, err := parseInt64(r, "id")
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if _, err := a.Store.GetMovie(r.Context(), id); errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "movie not found")
-		return
-	} else if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	ctx, cancel := contextWithTimeout(5 * time.Minute)
-	defer cancel()
-	stats, err := a.Scanner.RescanMovie(ctx, id)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, stats)
 }
 
 func (a *API) listMovieFiles(w http.ResponseWriter, r *http.Request) {

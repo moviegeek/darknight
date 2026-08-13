@@ -1,11 +1,12 @@
 import { Link, NavLink, Route, Routes } from "react-router-dom";
-import { Film, FolderTree, Layers, Settings as SettingsIcon } from "lucide-react";
+import { Film, FolderTree, Layers, Settings as SettingsIcon, Terminal } from "lucide-react";
 
 import CollectionPage from "./pages/CollectionPage";
 import CollectionsPage from "./pages/CollectionsPage";
 import LibraryPage from "./pages/LibraryPage";
 import MoviePage from "./pages/MoviePage";
 import SettingsPage from "./pages/SettingsPage";
+import SqlConsolePage from "./pages/SqlConsolePage";
 import { cn } from "./lib/format";
 
 export default function App() {
@@ -19,6 +20,7 @@ export default function App() {
           <Route path="/collections" element={<CollectionsPage />} />
           <Route path="/collections/:id" element={<CollectionPage />} />
           <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/dev/sql" element={<SqlConsolePage />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </main>
@@ -38,6 +40,7 @@ function Header() {
           <NavTab to="/" icon={<FolderTree className="h-4 w-4" />} label="资料库" end />
           <NavTab to="/collections" icon={<Layers className="h-4 w-4" />} label="合集" />
           <NavTab to="/settings" icon={<SettingsIcon className="h-4 w-4" />} label="设置" />
+          <NavTab to="/dev/sql" icon={<Terminal className="h-4 w-4" />} label="控制台" />
         </nav>
       </div>
     </header>

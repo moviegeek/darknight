@@ -1,17 +1,15 @@
 import { useParams, Link } from "react-router-dom";
-import { useQueries, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Disc3, FileVideo, RefreshCw } from "lucide-react";
+import { useQueries, useQuery } from "@tanstack/react-query";
+import { ArrowLeft, Disc3, FileText, FileVideo } from "lucide-react";
 
 import {
   getMovie,
   getMovieCast,
   listMovieFiles,
   getMovieFile,
-  enrichMovie,
-  rescanMovie,
   tmdbImage,
 } from "../api/client";
-import type { AudioTrack, CastResponse, MovieFileDetail, Subtitle } from "../api/types";
+import type { AudioTrack, CastResponse, MovieFile, MovieFileDetail, Subtitle } from "../api/types";
 import {
   cn,
   audioChannelCountLabel,
@@ -22,12 +20,12 @@ import {
   movieCountryCodes,
   resolutionLabel,
   movieTitleLines,
+  sourceLabel,
 } from "../lib/format";
 
 export default function MoviePage() {
   const { id } = useParams<{ id: string }>();
   const movieId = Number(id);
-  const qc = useQueryClient();
 
   const { data: movie } = useQuery({
     queryKey: ["movie", movieId],
@@ -43,22 +41,6 @@ export default function MoviePage() {
     queryKey: ["movie-cast", movieId],
     queryFn: () => getMovieCast(movieId),
     enabled: !!movieId,
-  });
-
-  // "refresh" re-scans the on-disk folder (picks up a replaced video file or
-  // added/removed subtitles) and then re-fetches TMDB metadata.
-  const refreshMut = useMutation({
-    mutationFn: async () => {
-      const scan = await rescanMovie(movieId);
-      const enrich = await enrichMovie(movieId);
-      return { scan, enrich };
-    },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["movie", movieId] });
-      qc.invalidateQueries({ queryKey: ["movie-cast", movieId] });
-      qc.invalidateQueries({ queryKey: ["movie-files", movieId] });
-      qc.invalidateQueries({ queryKey: ["movie-file", movieId] });
-    },
   });
 
   // fetch the full detail (audio/subs) for each file in parallel
@@ -116,23 +98,12 @@ export default function MoviePage() {
             </div>
           </div>
           <div className="flex-1 pt-32">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h1 className="text-3xl font-bold text-ink">
-                  {primary}
-                  {movie.year ? <span className="ml-2 text-ink-muted">({movie.year})</span> : null}
-                </h1>
-                {secondary && <p className="mt-1 text-base text-ink-muted">{secondary}</p>}
-              </div>
-              <button
-                onClick={() => refreshMut.mutate()}
-                disabled={refreshMut.isPending}
-                title="重新扫描文件夹并从 TMDB 刷新元数据"
-                className="inline-flex shrink-0 items-center gap-1 rounded-md border border-border px-2.5 py-1.5 text-xs text-ink-muted hover:text-ink disabled:opacity-50"
-              >
-                <RefreshCw className={cn("h-3.5 w-3.5", refreshMut.isPending && "animate-spin")} />
-                重新扫描
-              </button>
+            <div>
+              <h1 className="text-3xl font-bold text-ink">
+                {primary}
+                {movie.year ? <span className="ml-2 text-ink-muted">({movie.year})</span> : null}
+              </h1>
+              {secondary && <p className="mt-1 text-base text-ink-muted">{secondary}</p>}
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-3 text-sm text-ink-muted">
               {movie.runtime > 0 && <span>{formatDuration(movie.runtime * 60)}</span>}
@@ -171,9 +142,6 @@ export default function MoviePage() {
                 {movie.synopsis}
               </p>
             )}
-            {refreshMut.isError && (
-              <p className="mt-2 text-xs text-accent">刷新失败：{String(refreshMut.error)}</p>
-            )}
           </div>
         </div>
 
@@ -190,7 +158,15 @@ export default function MoviePage() {
           {files.length === 0 ? (
             <p className="text-sm text-ink-muted">暂无文件。</p>
           ) : (
-            <VersionTable files={files} details={details.map((d) => d.data)} />
+            <>
+              <VersionTable files={files} details={details.map((d) => d.data)} />
+              {/* file paths */}
+              <div className="mt-4 space-y-4">
+                {files.map((f, i) => (
+                  <FilePaths key={f.id} file={f} detail={details[i]?.data} />
+                ))}
+              </div>
+            </>
           )}
         </section>
       </div>
@@ -244,7 +220,7 @@ function VersionTable({
                   </span>
                 </Td>
                 <Td className="text-ink">{resolutionLabel(f.resolution) || "—"}</Td>
-                <Td>{f.source || "—"}</Td>
+                <Td>{sourceLabel(f.source)}</Td>
                 <Td>{f.video_codec || "—"}</Td>
                 <Td>
                   {f.audio_codec || "—"}
@@ -277,6 +253,41 @@ function VersionTable({
   );
 }
 
+// FilePaths renders the video file path and any external subtitle file paths
+// for one release as a compact, standalone block below the version table.
+// Each path is shown as {library}/dir/filename in monospace.
+function FilePaths({ file, detail }: { file: MovieFile; detail?: MovieFileDetail }) {
+  const videoPath = [file.library_name, file.dir_path, file.is_disc ? "" : file.file_name]
+    .filter(Boolean)
+    .join("/");
+  const extSubs = (detail?.subtitles ?? []).filter((s) => !s.is_embedded);
+  return (
+    <div className="space-y-1">
+      <div className="flex items-start gap-1.5 font-mono text-xs text-ink-dim">
+        <FileVideo className="mt-0.5 h-3 w-3 shrink-0" />
+        <span className="break-all" title={videoPath}>
+          {videoPath}
+        </span>
+      </div>
+      {extSubs.map((s) => {
+        const name = s.file_path.split("/").pop() || s.file_path;
+        const subPath = [file.library_name, file.dir_path, name].filter(Boolean).join("/");
+        return (
+          <div
+            key={s.id}
+            className="flex items-start gap-1.5 font-mono text-xs text-ink-dim"
+          >
+            <FileText className="mt-0.5 h-3 w-3 shrink-0" />
+            <span className="break-all" title={subPath}>
+              {subPath}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // AudioTrackList shows one line per audio stream: language, codec, channel
 // layout, and default/lossless flags.
 function AudioTrackList({ tracks }: { tracks?: AudioTrack[] }) {
@@ -302,16 +313,22 @@ function AudioTrackList({ tracks }: { tracks?: AudioTrack[] }) {
 // SubtitleList renders one column's worth of subtitle streams: either the
 // embedded ones (language + format) or the external files (language, format,
 // and file size), depending on `embedded`.
-function SubtitleList({ subs, embedded }: { subs?: Subtitle[]; embedded: boolean }) {
+function SubtitleList({
+  subs,
+  embedded,
+}: {
+  subs?: Subtitle[];
+  embedded: boolean;
+}) {
   if (!subs) return <span className="text-xs text-ink-dim">…</span>;
   const list = subs.filter((s) => s.is_embedded === embedded);
-  if (list.length === 0) return <span className="text-xs text-ink-dim">—</span>;
+  if (list.length === 0) return <span className="text-xs text-ink-dim">-</span>;
   return (
     <ul className="space-y-0.5 text-xs">
       {list.map((s) => (
         <li key={s.id}>
           <span className="text-ink">{s.language || "und"}</span>
-          <span className="text-ink-dim"> · {s.format || "—"}</span>
+          <span className="text-ink-dim"> · {s.format || "-"}</span>
           {embedded && s.is_default && <span className="ml-1 text-ink-dim">默认</span>}
           {!embedded && s.file_size > 0 && (
             <span className="ml-1 text-ink-dim">({formatBytes(s.file_size)})</span>

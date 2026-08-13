@@ -44,6 +44,25 @@ export function resolutionLabel(res: string): string {
   }
 }
 
+// Maps a raw source string to a display label. Disc-folder releases are
+// tagged "Bluray Disk" by the scanner; show them as "蓝光原盘".
+export function sourceLabel(src: string): string {
+  switch (src) {
+    case "Bluray Disk":
+      return "蓝光原盘";
+    case "UHD BluRay":
+      return "UHD BluRay";
+    case "BluRay":
+      return "BluRay";
+    case "WebDL":
+      return "WebDL";
+    case "HDTV":
+      return "HDTV";
+    default:
+      return src || "-";
+  }
+}
+
 export function channelsLabel(ch: string): string {
   return ch || "-";
 }

@@ -11,6 +11,113 @@ import (
 	"github.com/moviegeek/darknight/internal/model"
 )
 
+// UpsertMovieSeed is the scanner's seed-row counterpart to UpsertMovie. It
+// resolves an existing movie for a release parsed from a directory name (+ an
+// optional .nfo) and returns its id, creating one when nothing matches.
+//
+// It differs from UpsertMovie in two ways that matter for the scan path:
+//
+//  1. Title matching is widened. The enricher overwrites movies.title with the
+//     TMDB original title (e.g. "十三人の刺客") and keeps the parsed English
+//     name only in title_en. A re-scan re-parses the English name from the
+//     directory, so matching only movies.title misses the enriched row and
+//     inserts a duplicate. Seed matching therefore also tries title_en and
+//     original_title, in addition to title, against both the parsed title and
+//     the .nfo title.
+//  2. Enriched rows are protected. When the matched row already carries a
+//     tmdb_id, the scanner has nothing authoritative to contribute: only
+//     movie_id reattachment is needed. The TMDB-derived display fields
+//     (title/original_title/title_en/title_zh/poster/synopsis/...) are left
+//     untouched so a re-scan can never clobber enriched metadata. The row is
+//     only updated when it has no tmdb_id yet (first-time seed before enrich,
+//     or offline mode).
+//
+// m.ID, m.CreatedAt and m.UpdatedAt are handled as in UpsertMovie.
+func (s *Store) UpsertMovieSeed(ctx context.Context, m *model.Movie) error {
+	now := time.Now().Unix()
+	if m.CreatedAt == 0 {
+		m.CreatedAt = now
+	}
+	m.UpdatedAt = now
+
+	// Resolve an existing id with the widened title match.
+	var existingID int64
+	if m.ID != 0 {
+		existingID = m.ID
+	}
+	if existingID == 0 && m.TMDBID != 0 {
+		if err := s.DB.QueryRowContext(ctx,
+			`SELECT id FROM movies WHERE tmdb_id = ?`, m.TMDBID).Scan(&existingID); err != nil &&
+			!errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
+	if existingID == 0 && m.IMDBID != "" {
+		if err := s.DB.QueryRowContext(ctx,
+			`SELECT id FROM movies WHERE imdb_id = ?`, m.IMDBID).Scan(&existingID); err != nil &&
+			!errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
+	if existingID == 0 && m.Title != "" {
+		row := s.DB.QueryRowContext(ctx, `
+SELECT id, tmdb_id FROM movies
+WHERE year = ?
+  AND (title = ? OR title_en = ? OR original_title = ?
+       OR title = ? OR title_en = ? OR original_title = ?)`,
+			m.Year,
+			m.Title, m.Title, m.Title,
+			m.OriginalTitle, m.OriginalTitle, m.OriginalTitle)
+		var id int64
+		var tmdbID sql.NullInt64
+		if err := row.Scan(&id, &tmdbID); err == nil {
+			existingID = id
+			// When the matched row is already enriched, the scanner has nothing
+			// authoritative to add: only reattach by id, leave display fields.
+			m.ID = id
+			if tmdbID.Valid && tmdbID.Int64 != 0 {
+				return nil
+			}
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
+
+	if existingID != 0 {
+		m.ID = existingID
+		_, err := s.DB.ExecContext(ctx, `
+UPDATE movies SET title=?, sort_title=?, year=?, runtime=?, synopsis=?,
+  tmdb_id=COALESCE(NULLIF(tmdb_id,0),?),
+  imdb_id=COALESCE(NULLIF(imdb_id,''),?),
+  country=COALESCE(NULLIF(?,''), country),
+  collection_id=COALESCE(?, collection_id),
+  updated_at=?
+WHERE id=?`,
+			m.Title, m.SortTitle, m.Year, m.Runtime, m.Synopsis,
+			nullableInt64(m.TMDBID), m.IMDBID,
+			m.Country, nullableInt64(m.CollectionID),
+			m.UpdatedAt, m.ID)
+		return err
+	}
+
+	res, err := s.DB.ExecContext(ctx, `
+INSERT INTO movies(title, sort_title, year, release_date, runtime, synopsis,
+  poster_path, backdrop_path, tmdb_id, imdb_id, vote_average, vote_count,
+  collection_id, country, countries, original_language, original_title, title_en, title_zh,
+  created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.Title, m.SortTitle, m.Year, m.ReleaseDate, m.Runtime, m.Synopsis,
+		m.PosterPath, m.BackdropPath, nullableInt64(m.TMDBID), m.IMDBID,
+		m.VoteAverage, m.VoteCount, nullableInt64(m.CollectionID),
+		m.Country, m.Countries, m.OriginalLanguage, m.OriginalTitle, m.TitleEn, m.TitleZh,
+		m.CreatedAt, m.UpdatedAt)
+	if err != nil {
+		return err
+	}
+	m.ID, _ = res.LastInsertId()
+	return nil
+}
+
 // UpsertMovie inserts or updates a movie keyed by tmdb_id (when set) or by
 // (title, year). Returns the movie with its id filled in.
 //
@@ -437,13 +544,17 @@ func scanMovieRow(row scanner) (*model.Movie, error) {
 // ListMovieFiles returns every physical release for a movie, newest scan first.
 func (s *Store) ListMovieFiles(ctx context.Context, movieID int64) ([]model.MovieFile, error) {
 	rows, err := s.DB.QueryContext(ctx, `
-SELECT id, movie_id, library_id, dir_path, file_name, is_disc, file_size, file_modified,
-  release_group, edition, source, resolution, video_codec, audio_codec, audio_channels,
-  hdr, dolby_vision, bit_depth, audio_count, language, is_collection, raw_name,
-  duration_sec, video_bitrate, frame_rate, width, height, container,
-  ffprobe_json, ffprobe_version, ffprobe_at,
-  nfo_path, subtitle_languages, has_external_subtitle, scanned_at, created_at, updated_at
-FROM movie_files WHERE movie_id = ? ORDER BY resolution DESC, file_size DESC`, movieID)
+SELECT mf.id, mf.movie_id, mf.library_id, l.name,
+  mf.dir_path, mf.file_name, mf.is_disc, mf.file_size, mf.file_modified,
+  mf.release_group, mf.edition, mf.source, mf.resolution, mf.video_codec, mf.audio_codec, mf.audio_channels,
+  mf.hdr, mf.dolby_vision, mf.bit_depth, mf.audio_count, mf.language, mf.is_collection, mf.raw_name,
+  mf.duration_sec, mf.video_bitrate, mf.frame_rate, mf.width, mf.height, mf.container,
+  mf.ffprobe_json, mf.ffprobe_version, mf.ffprobe_at,
+  mf.nfo_path, mf.subtitle_languages, mf.has_external_subtitle, mf.scanned_at, mf.created_at, mf.updated_at
+FROM movie_files mf
+JOIN libraries l ON l.id = mf.library_id
+WHERE mf.movie_id = ?
+ORDER BY mf.resolution DESC, mf.file_size DESC`, movieID)
 	if err != nil {
 		return nil, err
 	}
@@ -465,7 +576,7 @@ func scanMovieFile(rows interface {
 	var mf model.MovieFile
 	var isDisc, dv, isColl, hasExtSub int64
 	err := rows.Scan(
-		&mf.ID, &mf.MovieID, &mf.LibraryID, &mf.DirPath, &mf.FileName, &isDisc,
+		&mf.ID, &mf.MovieID, &mf.LibraryID, &mf.LibraryName, &mf.DirPath, &mf.FileName, &isDisc,
 		&mf.FileSize, &mf.FileModified, &mf.ReleaseGroup, &mf.Edition,
 		&mf.Source, &mf.Resolution, &mf.VideoCodec, &mf.AudioCodec,
 		&mf.AudioChannels, &mf.HDR, &dv, &mf.BitDepth, &mf.AudioCount,

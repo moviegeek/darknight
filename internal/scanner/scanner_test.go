@@ -225,8 +225,70 @@ func TestScanLibrary_DiscRelease(t *testing.T) {
 	if len(files) != 1 || !files[0].IsDisc {
 		t.Fatalf("expected 1 disc file, got %+v", files)
 	}
-	if files[0].VideoCodec != "AVC" || files[0].Source != "BluRay" {
+	if files[0].VideoCodec != "AVC" || files[0].Source != "Bluray Disk" {
 		t.Fatalf("unexpected parsed disc fields: %+v", files[0])
+	}
+}
+
+// TestScanLibrary_MultiDiscBoxset verifies a boxset-style folder that groups
+// several Blu-ray disc releases in subdirectories (each with its own BDMV
+// folder) is scanned as one movie_file per disc. This is the structure used
+// for multi-disc releases, e.g.:
+//
+//	Interstellar...-HDclub/
+//	  Interstellar...Disc.1-HDclub/BDMV/STREAM/00000.m2ts
+//	  Interstellar...Disc.2.Bonus-HDclub/BDMV/STREAM/00000.m2ts
+func TestScanLibrary_MultiDiscBoxset(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	root := t.TempDir()
+	boxset := filepath.Join(root, "Interstellar.2014.IMAX.Edition.Blu-ray.CEE.1080p.AVC.DTS-HD.MA5.1-HDclub")
+	for _, disc := range []string{
+		"Interstellar.2014.IMAX.Edition.Blu-ray.CEE.1080p.AVC.DTS-HD.MA5.1.Disc.1-HDclub",
+		"Interstellar.2014.IMAX.Edition.Blu-ray.CEE.1080p.AVC.DTS-HD.MA5.1.Disc.2.Bonus-HDclub",
+	} {
+		streamDir := filepath.Join(boxset, disc, "BDMV", "STREAM")
+		if err := os.MkdirAll(streamDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(streamDir, "00000.m2ts"),
+			[]byte("fake-m2ts-payload-1234567890"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	lib, err := s.CreateLibrary(ctx, "Films", root, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc := &scanner.Scanner{Store: s, Logger: slog.New(slog.NewTextHandler(os.Stderr, nil)), FFProbe: fakeProbe}
+
+	stats, err := sc.ScanLibrary(ctx, lib)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if stats.Added != 2 {
+		t.Fatalf("expected 2 added (one per disc), got %+v", stats)
+	}
+	movies, err := s.ListMovies(ctx, store.ListMoviesOpts{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(movies) != 1 || movies[0].Title != "Interstellar" || movies[0].Year != 2014 {
+		t.Fatalf("expected one Interstellar movie, got %+v", movies)
+	}
+	files, err := s.ListMovieFiles(ctx, movies[0].ID)
+	if err != nil {
+		t.Fatalf("files: %v", err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("expected 2 disc files, got %d", len(files))
+	}
+	for _, f := range files {
+		if !f.IsDisc || f.Source != "Bluray Disk" {
+			t.Fatalf("expected disc release with Bluray Disk source, got %+v", f)
+		}
 	}
 }
 

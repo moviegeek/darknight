@@ -21,6 +21,7 @@ const (
 	SourceUnknown Source = ""
 	BluRay        Source = "BluRay"     // Blu-ray disc / rip (incl. "Blu-ray", "Bluray")
 	UHDBluRay     Source = "UHD BluRay" // UHD/4K Blu-ray (often appears as "UHD.BluRay")
+	BlurayDisk    Source = "Bluray Disk" // BDMV folder structure (original Blu-ray disc)
 	BDRip         Source = "BDRip"      // re-encode from a Blu-ray source
 	BRRip         Source = "BRRip"
 	WebDL         Source = "WebDL" // WEB-DL / WEBRip

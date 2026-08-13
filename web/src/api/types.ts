@@ -122,6 +122,7 @@ export interface MovieFile {
   id: number;
   movie_id: number;
   library_id: number;
+  library_name: string;
   dir_path: string;
   file_name: string;
   is_disc: boolean;
@@ -209,15 +210,6 @@ export interface MovieFacets {
   watched: Record<string, number>;
 }
 
-// Result of a library scan or a single-movie rescan (POST /movies/:id/rescan).
-export interface ScanStats {
-  Added: number;
-  Updated: number;
-  Unchanged: number;
-  Removed: number;
-  Errors: number;
-}
-
 // Query params for the movies list. Empty values are omitted.
 export interface MovieQuery {
   q?: string;
@@ -239,4 +231,27 @@ export interface MovieQuery {
   desc?: boolean;
   limit?: number;
   offset?: number;
+}
+
+// ----- SQL console -----
+
+export interface TableColumn {
+  cid: number;
+  name: string;
+  type: string;
+  notnull: number;
+  pk: number;
+}
+
+export interface TableInfo {
+  name: string;
+  columns: TableColumn[];
+}
+
+export interface SqlResult {
+  columns: string[];
+  rows: unknown[][];
+  rows_affected: number;
+  last_insert_id?: number;
+  duration_ms: number;
 }
