@@ -2,6 +2,7 @@ package scanner_test
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -32,8 +33,8 @@ func fakeProbe(_ context.Context, _ string) (*ffprobe.Result, []byte, error) {
 				CodecType: "video", CodecName: "hevc",
 				Width: 3840, Height: 2160,
 				AvgFrameRate: "24000/1001",
-				SideDataList: []map[string]ffprobe.SideData{
-					{"x": {SideDataType: "DOVI configuration record"}},
+				SideDataList: []map[string]json.RawMessage{
+					{"x": json.RawMessage(`"DOVI configuration record"`)},
 				},
 			},
 			{CodecType: "audio", CodecName: "dts", Channels: 8, Disposition: ffprobe.Disposition{Default: 1},

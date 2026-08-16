@@ -2,10 +2,11 @@
 // opens the SQLite database, runs migrations, exposes the REST API, serves the
 // embedded web UI, and (optionally) scans libraries on start.
 //
-// Two one-shot maintenance subcommands are dispatched before the server starts:
+// One-shot maintenance subcommands are dispatched before the server starts:
 //
 //	darknight reenrich  re-run TMDB enrichment to backfill bilingual titles
 //	darknight reprobe   re-probe files to backfill the cached ffprobe JSON
+//	darknight rematch   re-run scored TMDB matching for unmatched movies
 //
 // Run with no subcommand (or an unknown one) to start the server as usual.
 package main
@@ -26,7 +27,10 @@ import (
 	"github.com/moviegeek/darknight/internal/api"
 	"github.com/moviegeek/darknight/internal/config"
 	"github.com/moviegeek/darknight/internal/ffprobe"
+	"github.com/moviegeek/darknight/internal/matcher"
 	"github.com/moviegeek/darknight/internal/metadata"
+	"github.com/moviegeek/darknight/internal/model"
+	"github.com/moviegeek/darknight/internal/parser"
 	"github.com/moviegeek/darknight/internal/scanner"
 	"github.com/moviegeek/darknight/internal/server"
 	"github.com/moviegeek/darknight/internal/store"
@@ -45,6 +49,8 @@ func main() {
 			os.Exit(runReenrich(ctx, os.Args[2:]))
 		case "reprobe":
 			os.Exit(runReprobe(ctx, os.Args[2:]))
+		case "rematch":
+			os.Exit(runRematch(ctx, os.Args[2:]))
 		}
 	}
 
@@ -56,6 +62,7 @@ func main() {
 	defer rt.st.Close()
 
 	apih := api.New(rt.st, rt.sc, rt.log, rt.enricher)
+	apih.Matcher = rt.matcher
 	handler := server.New(rt.cfg, apih, rt.log)
 
 	if rt.cfg.ScanOnStart {
@@ -96,6 +103,7 @@ type runtime struct {
 	st       *store.Store
 	sc       *scanner.Scanner
 	enricher *metadata.Enricher
+	matcher  *matcher.Matcher
 }
 
 // buildRuntime loads config, opens the store, runs migrations, and wires the
@@ -124,7 +132,14 @@ func buildRuntime(ctx context.Context) (*runtime, error) {
 		log.Info("tmdb enrichment disabled (set TMDB_API_KEY to enable)")
 	}
 	sc.Enricher = enricher
-	return &runtime{cfg: cfg, log: log, st: st, sc: sc, enricher: enricher}, nil
+	// scored matcher replaces the legacy first-result search for movies
+	// without an authoritative NFO id; nil keeps offline mode unchanged.
+	var matchr *matcher.Matcher
+	if enricher.Enabled() {
+		matchr = matcher.New(tmdbClient, log)
+		sc.Matcher = matchr
+	}
+	return &runtime{cfg: cfg, log: log, st: st, sc: sc, enricher: enricher, matcher: matchr}, nil
 }
 
 // runReenrich re-runs TMDB enrichment for movies missing the bilingual /
@@ -260,6 +275,90 @@ func runReprobe(ctx context.Context, args []string) int {
 		}
 	}
 	rt.log.Info("reprobe done", "total", len(files), "probed", done, "failed", failed)
+	return 0
+}
+
+// runRematch re-runs the scored TMDB matcher over every pending/unmatched
+// movie (manual matches are never touched). --dry-run prints the decisions
+// without writing anything - the report to review before committing a run.
+//
+//	darknight rematch --dry-run    report only
+//	darknight rematch              apply decisions (accept/pending/unmatched)
+func runRematch(ctx context.Context, args []string) int {
+	rt, err := buildRuntime(ctx)
+	if err != nil {
+		slog.New(slog.NewTextHandler(os.Stdout, nil)).Error("startup", "err", err)
+		return 1
+	}
+	defer rt.st.Close()
+	if rt.matcher == nil {
+		rt.log.Error("rematch requires TMDB (set TMDB_API_KEY)")
+		return 1
+	}
+	dryRun := false
+	for _, a := range args {
+		if a == "--dry-run" {
+			dryRun = true
+		}
+	}
+
+	movies, err := rt.st.ListMoviesForRematch(ctx, 0)
+	if err != nil {
+		rt.log.Error("list movies for rematch", "err", err)
+		return 1
+	}
+	rt.log.Info("rematch", "movies", len(movies), "dry_run", dryRun)
+
+	accepted, pending, failed, merges := 0, 0, 0, 0
+	for i := range movies {
+		m := &movies[i]
+		variants := parser.SearchVariants(m.Title)
+		res, err := rt.matcher.Match(ctx, variants, m.Year)
+		if err != nil {
+			rt.log.Warn("rematch error", "title", m.Title, "err", err)
+			failed++
+			continue
+		}
+		switch res.Decision {
+		case matcher.DecisionAccept:
+			accepted++
+			rt.log.Info("rematch accept", "title", m.Title, "tmdb_id", res.Best.TMDBID,
+				"best", res.Best.Title, "score", res.Best.Score)
+			if !dryRun {
+				// ApplyMatch merges into the row that already owns this tmdb_id
+				// instead of hitting the UNIQUE constraint on movies.tmdb_id.
+				mm := *m
+				if _, merged, err := rt.enricher.ApplyMatch(ctx, &mm, res.Best.TMDBID, int(res.Best.Score)); err != nil {
+					rt.log.Warn("rematch apply", "title", m.Title, "err", err)
+				} else if merged {
+					merges++
+				}
+			}
+		case matcher.DecisionPending:
+			pending++
+			rt.log.Info("rematch pending", "title", m.Title,
+				"best", res.Best.Title, "score", res.Best.Score, "reason", res.Reason)
+			if !dryRun {
+				if err := rt.st.SetMovieMatch(ctx, m.ID, 0,
+					model.MatchStatusPending, int(res.Best.Score), res.Reason); err != nil {
+					rt.log.Warn("rematch set match", "id", m.ID, "err", err)
+				}
+				rt.st.SetMatchCandidates(ctx, m.ID, res.Candidates)
+			}
+		default:
+			failed++
+			rt.log.Warn("rematch unmatched", "title", m.Title, "reason", res.Reason)
+			if !dryRun {
+				if err := rt.st.SetMovieMatch(ctx, m.ID, 0,
+					model.MatchStatusUnmatched, 0, res.Reason); err != nil {
+					rt.log.Warn("rematch set match", "id", m.ID, "err", err)
+				}
+			}
+		}
+	}
+	rt.log.Info("rematch done", "total", len(movies),
+		"accepted", accepted, "merged_into_existing", merges,
+		"pending", pending, "unmatched", failed, "dry_run", dryRun)
 	return 0
 }
 

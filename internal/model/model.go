@@ -37,9 +37,29 @@ type Movie struct {
 	Country          string  `json:"country"`          // primary production country (ISO or name)
 	Countries        string  `json:"countries"`        // all production countries, comma-separated ISO codes
 	OriginalLanguage string  `json:"original_language"` // ISO 639-1 code from TMDB
-	CreatedAt        int64   `json:"created_at"`
-	UpdatedAt        int64   `json:"updated_at"`
+	// Match state machine (migration 009). matched = auto-accepted by the
+	// matcher or confirmed by enrichment; manual = human-picked tmdb_id, never
+	// overwritten by automatic matching; pending = candidate(s) awaiting
+	// review; unmatched = no candidate scored high enough.
+	MatchStatus    string `json:"match_status"` // matched | pending | unmatched | manual
+	MatchScore     int    `json:"match_score"`
+	MatchAttempts  int    `json:"match_attempts"`
+	LastMatchAt    int64  `json:"last_match_at"`
+	FailReason     string `json:"fail_reason"`
+	// MatchCandidates is the JSON-encoded candidate list stored while the row
+	// is pending review (see store.SetMatchCandidates).
+	MatchCandidates string `json:"match_candidates,omitempty"`
+	CreatedAt       int64  `json:"created_at"`
+	UpdatedAt       int64  `json:"updated_at"`
 }
+
+// Match status values (movies.match_status).
+const (
+	MatchStatusMatched   = "matched"
+	MatchStatusPending   = "pending"
+	MatchStatusUnmatched = "unmatched"
+	MatchStatusManual    = "manual"
+)
 
 // Collection is a system-level movie collection (series / anthology).
 type Collection struct {

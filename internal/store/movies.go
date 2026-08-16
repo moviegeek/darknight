@@ -39,6 +39,7 @@ func (s *Store) UpsertMovieSeed(ctx context.Context, m *model.Movie) error {
 		m.CreatedAt = now
 	}
 	m.UpdatedAt = now
+	m.MatchStatus = seedMatchStatus(m)
 
 	// Resolve an existing id with the widened title match.
 	var existingID int64
@@ -60,14 +61,26 @@ func (s *Store) UpsertMovieSeed(ctx context.Context, m *model.Movie) error {
 		}
 	}
 	if existingID == 0 && m.Title != "" {
-		row := s.DB.QueryRowContext(ctx, `
-SELECT id, tmdb_id FROM movies
-WHERE year = ?
-  AND (title = ? OR title_en = ? OR original_title = ?
-       OR title = ? OR title_en = ? OR original_title = ?)`,
-			m.Year,
-			m.Title, m.Title, m.Title,
-			m.OriginalTitle, m.OriginalTitle, m.OriginalTitle)
+		// Stage 1: exact match against every stored title variant. Only
+		// NON-EMPTY candidates may be compared: the seed path leaves
+		// OriginalTitle empty, and unenriched rows have title_en /
+		// original_title = '', so a blind `original_title = ?` with an empty
+		// argument degenerates into "any row of this year" and silently
+		// merges unrelated films (observed: 7 different 2017 films on one row).
+		cands := make([]string, 0, 2)
+		cands = append(cands, m.Title)
+		if m.OriginalTitle != "" && m.OriginalTitle != m.Title {
+			cands = append(cands, m.OriginalTitle)
+		}
+		var ors []string
+		args := []interface{}{m.Year}
+		for _, c := range cands {
+			ors = append(ors, `(title = ? OR title_en = ? OR original_title = ?)`)
+			args = append(args, c, c, c)
+		}
+		row := s.DB.QueryRowContext(ctx,
+			`SELECT id, tmdb_id FROM movies WHERE year = ? AND (`+strings.Join(ors, " OR ")+`)`,
+			args...)
 		var id int64
 		var tmdbID sql.NullInt64
 		if err := row.Scan(&id, &tmdbID); err == nil {
@@ -81,6 +94,30 @@ WHERE year = ?
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
+
+		// Stage 2: folded-key match. Release names differ from TMDB titles in
+		// case, punctuation and diacritics ("As Good As It Gets" vs "As Good
+		// as It Gets", "Czlowiek" vs "Człowiek"); without this the release
+		// would insert a duplicate row and orphan the enriched one. Tried with
+		// the year first, then - because the enricher overwrites `year` from
+		// TMDB's release_date and festival/local years differ by one - within
+		// a +/-1 window.
+		if existingID == 0 {
+			key := MatchKey(m.Title)
+			if key != "" {
+				id, tmdbID, err := s.findByMatchKey(ctx, key, m.Year)
+				if err != nil {
+					return err
+				}
+				if id != 0 {
+					existingID = id
+					m.ID = id
+					if tmdbID != 0 {
+						return nil // enriched row: reattach only
+					}
+				}
+			}
+		}
 	}
 
 	if existingID != 0 {
@@ -91,11 +128,14 @@ UPDATE movies SET title=?, sort_title=?, year=?, runtime=?, synopsis=?,
   imdb_id=COALESCE(NULLIF(imdb_id,''),?),
   country=COALESCE(NULLIF(?,''), country),
   collection_id=COALESCE(?, collection_id),
+  match_status=COALESCE(NULLIF(?,''), match_status),
+  match_key=?,
   updated_at=?
 WHERE id=?`,
 			m.Title, m.SortTitle, m.Year, m.Runtime, m.Synopsis,
 			nullableInt64(m.TMDBID), m.IMDBID,
 			m.Country, nullableInt64(m.CollectionID),
+			m.MatchStatus, MatchKey(m.Title),
 			m.UpdatedAt, m.ID)
 		return err
 	}
@@ -104,18 +144,65 @@ WHERE id=?`,
 INSERT INTO movies(title, sort_title, year, release_date, runtime, synopsis,
   poster_path, backdrop_path, tmdb_id, imdb_id, vote_average, vote_count,
   collection_id, country, countries, original_language, original_title, title_en, title_zh,
+  match_status, match_score, match_attempts, last_match_at, fail_reason, match_key,
   created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.Title, m.SortTitle, m.Year, m.ReleaseDate, m.Runtime, m.Synopsis,
 		m.PosterPath, m.BackdropPath, nullableInt64(m.TMDBID), m.IMDBID,
 		m.VoteAverage, m.VoteCount, nullableInt64(m.CollectionID),
 		m.Country, m.Countries, m.OriginalLanguage, m.OriginalTitle, m.TitleEn, m.TitleZh,
+		m.MatchStatus, m.MatchScore, m.MatchAttempts, m.LastMatchAt, m.FailReason,
+		MatchKey(m.Title),
 		m.CreatedAt, m.UpdatedAt)
 	if err != nil {
 		return err
 	}
 	m.ID, _ = res.LastInsertId()
 	return nil
+}
+
+// seedMatchStatus normalises an unset match status for inserts: the column has
+// a CHECK constraint, so an empty value must become 'unmatched'. An explicit
+// tmdb_id implies the row is already matched.
+func seedMatchStatus(m *model.Movie) string {
+	switch m.MatchStatus {
+	case model.MatchStatusMatched, model.MatchStatusPending,
+		model.MatchStatusUnmatched, model.MatchStatusManual:
+		return m.MatchStatus
+	}
+	if m.TMDBID != 0 {
+		return model.MatchStatusMatched
+	}
+	return model.MatchStatusUnmatched
+}
+
+// findByMatchKey looks up a movie by its folded title key, preferring an exact
+// year, then a +/-1 year window (the enricher rewrites `year` from TMDB's
+// release_date, which often differs by one from the release name's festival or
+// local-release year). Returns (0, 0, nil) when nothing matches.
+//
+// Enriched rows (tmdb_id set) win over unenriched ones so a release reattaches
+// to the row that already carries metadata.
+func (s *Store) findByMatchKey(ctx context.Context, key string, year int) (int64, int64, error) {
+	query := `
+SELECT id, tmdb_id FROM movies
+WHERE match_key = ? AND (? = 0 OR ABS(year - ?) <= ?)
+ORDER BY (tmdb_id IS NOT NULL) DESC, ABS(year - ?) ASC, id ASC
+LIMIT 1`
+	for _, window := range []int{0, 1} {
+		row := s.DB.QueryRowContext(ctx, query, key, year, year, window, year)
+		var id int64
+		var tmdbID sql.NullInt64
+		err := row.Scan(&id, &tmdbID)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return 0, 0, err
+		}
+		return id, tmdbID.Int64, nil
+	}
+	return 0, 0, nil
 }
 
 // UpsertMovie inserts or updates a movie keyed by tmdb_id (when set) or by
@@ -129,6 +216,7 @@ func (s *Store) UpsertMovie(ctx context.Context, m *model.Movie) error {
 		m.CreatedAt = now
 	}
 	m.UpdatedAt = now
+	m.MatchStatus = seedMatchStatus(m)
 
 	// resolve existing id.
 	//
@@ -185,6 +273,9 @@ UPDATE movies SET title=?, sort_title=?, year=?, release_date=?, runtime=?, syno
   original_title=COALESCE(NULLIF(?,''), original_title),
   title_en=COALESCE(NULLIF(?,''), title_en),
   title_zh=COALESCE(NULLIF(?,''), title_zh),
+  match_status=COALESCE(NULLIF(?,''), match_status),
+  match_score=CASE WHEN ? > 0 THEN ? ELSE match_score END,
+  match_key=?,
   updated_at=?
 WHERE id=?`,
 			m.Title, m.SortTitle, m.Year, m.ReleaseDate, m.Runtime, m.Synopsis,
@@ -192,6 +283,7 @@ WHERE id=?`,
 			m.VoteAverage, m.VoteAverage, m.VoteCount, m.VoteCount,
 			nullableInt64(m.CollectionID), m.Country, m.Countries, m.OriginalLanguage,
 			m.OriginalTitle, m.TitleEn, m.TitleZh,
+			m.MatchStatus, m.MatchScore, m.MatchScore, MatchKey(m.Title),
 			m.UpdatedAt, m.ID)
 		return err
 	}
@@ -200,12 +292,15 @@ WHERE id=?`,
 INSERT INTO movies(title, sort_title, year, release_date, runtime, synopsis,
   poster_path, backdrop_path, tmdb_id, imdb_id, vote_average, vote_count,
   collection_id, country, countries, original_language, original_title, title_en, title_zh,
+  match_status, match_score, match_attempts, last_match_at, fail_reason, match_key,
   created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.Title, m.SortTitle, m.Year, m.ReleaseDate, m.Runtime, m.Synopsis,
 		m.PosterPath, m.BackdropPath, nullableInt64(m.TMDBID), m.IMDBID,
 		m.VoteAverage, m.VoteCount, nullableInt64(m.CollectionID),
 		m.Country, m.Countries, m.OriginalLanguage, m.OriginalTitle, m.TitleEn, m.TitleZh,
+		m.MatchStatus, m.MatchScore, m.MatchAttempts, m.LastMatchAt, m.FailReason,
+		MatchKey(m.Title),
 		m.CreatedAt, m.UpdatedAt)
 	if err != nil {
 		return err
@@ -232,6 +327,18 @@ type MovieFilter struct {
 	SubtitleLang     string   // e.g. "chi", "eng"; any movie_file with this subtitle language
 	ExternalSubtitle bool     // only movies with an external subtitle file
 	NoChiSubtitle    bool     // only movies with no Chinese subtitle on any file
+	// MatchIssue filters on data-health dimensions rather than content:
+	//   "unmatched"     - anything broken: no files at all, or no tmdb_id
+	//   "no_files"      - a movie row with zero movie_files (orphan entry)
+	//   "no_tmdb"       - has files but no tmdb_id (hence no poster/metadata)
+	//   "multi_version" - more than one movie_file maps to this movie
+	// Empty means no filter.
+	MatchIssue string
+	// MatchStatus filters on the match state machine. The two dimensions
+	// (MatchIssue + MatchStatus) are independent and AND together when both
+	// are set, so e.g. status=unmatched & issue=no_files is valid.
+	// Empty means no filter.
+	MatchStatus string
 }
 
 // MovieSort selects the list ordering.
@@ -399,6 +506,32 @@ LEFT JOIN (
 		addClause(`EXISTS (SELECT 1 FROM watch_status ws WHERE ws.movie_id=m.id AND ws.status='watching')`)
 	}
 
+	// Data-health filters. These describe the state of the local index rather
+	// than the film, so they are all EXISTS/COUNT predicates on movie_files
+	// plus the tmdb_id column - never a JOIN, which would change row counts.
+	switch f.MatchIssue {
+	case "no_files":
+		addClause(`NOT EXISTS (SELECT 1 FROM movie_files mf2 WHERE mf2.movie_id = m.id)`)
+	case "no_tmdb":
+		addClause(`m.tmdb_id IS NULL
+  AND EXISTS (SELECT 1 FROM movie_files mf2 WHERE mf2.movie_id = m.id)`)
+	case "unmatched":
+		// either half of the two problem classes above
+		addClause(`(m.tmdb_id IS NULL
+   OR NOT EXISTS (SELECT 1 FROM movie_files mf2 WHERE mf2.movie_id = m.id))`)
+	case "multi_version":
+		addClause(`(SELECT COUNT(*) FROM movie_files mf2 WHERE mf2.movie_id = m.id) > 1`)
+	}
+	if f.MatchStatus != "" {
+		// hard whitelist: the values are stored in the CHECK constraint and
+		// would otherwise let a typo return the whole library silently.
+		switch f.MatchStatus {
+		case model.MatchStatusMatched, model.MatchStatusPending,
+			model.MatchStatusUnmatched, model.MatchStatusManual:
+			addParam(`m.match_status = ?`, f.MatchStatus)
+		}
+	}
+
 	if len(where) > 0 {
 		b.WriteString("\nWHERE ")
 		b.WriteString(strings.Join(where, " AND "))
@@ -450,6 +583,8 @@ func movieColumns(prefix string) string {
 		prefix + "imdb_id", prefix + "vote_average", prefix + "vote_count",
 		prefix + "collection_id", prefix + "country", prefix + "countries", prefix + "original_language",
 		prefix + "original_title", prefix + "title_en", prefix + "title_zh",
+		prefix + "match_status", prefix + "match_score", prefix + "match_attempts",
+		prefix + "last_match_at", prefix + "fail_reason", prefix + "match_candidates",
 		prefix + "created_at", prefix + "updated_at",
 	}, ", ")
 }
@@ -532,6 +667,7 @@ func scanMovieRow(row scanner) (*model.Movie, error) {
 		&m.Synopsis, &m.PosterPath, &m.BackdropPath, &tmdbID, &m.IMDBID,
 		&m.VoteAverage, &m.VoteCount, &collectionID, &m.Country, &m.Countries, &m.OriginalLanguage,
 		&m.OriginalTitle, &m.TitleEn, &m.TitleZh,
+		&m.MatchStatus, &m.MatchScore, &m.MatchAttempts, &m.LastMatchAt, &m.FailReason, &m.MatchCandidates,
 		&m.CreatedAt, &m.UpdatedAt,
 	); err != nil {
 		return nil, err
@@ -554,7 +690,10 @@ SELECT mf.id, mf.movie_id, mf.library_id, l.name,
 FROM movie_files mf
 JOIN libraries l ON l.id = mf.library_id
 WHERE mf.movie_id = ?
-ORDER BY mf.resolution DESC, mf.file_size DESC`, movieID)
+-- order by the numeric pixel height embedded in resolution ("2160p" ->
+-- 2160); plain text ordering would put "720p" above "1080p".
+ORDER BY CAST(substr(mf.resolution, 1, length(mf.resolution)-1) AS INTEGER) DESC,
+  mf.file_size DESC`, movieID)
 	if err != nil {
 		return nil, err
 	}
@@ -575,8 +714,9 @@ func scanMovieFile(rows interface {
 }) (model.MovieFile, error) {
 	var mf model.MovieFile
 	var isDisc, dv, isColl, hasExtSub int64
+	var movieID sql.NullInt64 // movie_files.movie_id is nullable (unmatched files)
 	err := rows.Scan(
-		&mf.ID, &mf.MovieID, &mf.LibraryID, &mf.LibraryName, &mf.DirPath, &mf.FileName, &isDisc,
+		&mf.ID, &movieID, &mf.LibraryID, &mf.LibraryName, &mf.DirPath, &mf.FileName, &isDisc,
 		&mf.FileSize, &mf.FileModified, &mf.ReleaseGroup, &mf.Edition,
 		&mf.Source, &mf.Resolution, &mf.VideoCodec, &mf.AudioCodec,
 		&mf.AudioChannels, &mf.HDR, &dv, &mf.BitDepth, &mf.AudioCount,
@@ -585,6 +725,7 @@ func scanMovieFile(rows interface {
 		&mf.FFProbeJSON, &mf.FFProbeVersion, &mf.FFProbeAt,
 		&mf.NFOPath,
 		&mf.SubtitleLanguages, &hasExtSub, &mf.ScannedAt, &mf.CreatedAt, &mf.UpdatedAt)
+	mf.MovieID = movieID.Int64
 	mf.IsDisc = isDisc != 0
 	mf.DolbyVision = dv != 0
 	mf.IsCollection = isColl != 0

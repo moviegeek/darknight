@@ -9,10 +9,10 @@ import (
 	"github.com/moviegeek/darknight/internal/model"
 )
 
-// FindMovieFileByRelease looks up a movie_file by its unique (library, dir)
-// release key. Returns ErrNotFound when absent — the scanner uses this to
-// decide between insert and update.
-func (s *Store) FindMovieFileByRelease(ctx context.Context, libraryID int64, dirPath string) (*model.MovieFile, error) {
+// FindMovieFileByRelease looks up a movie_file by its unique (library, dir,
+// file) release key. Returns ErrNotFound when absent - the scanner uses this
+// to decide between insert and update. fileName is '' for disc releases.
+func (s *Store) FindMovieFileByRelease(ctx context.Context, libraryID int64, dirPath, fileName string) (*model.MovieFile, error) {
 	row := s.DB.QueryRowContext(ctx, `
 SELECT id, movie_id, library_id, '' AS library_name, dir_path, file_name, is_disc, file_size, file_modified,
   release_group, edition, source, resolution, video_codec, audio_codec, audio_channels,
@@ -20,7 +20,7 @@ SELECT id, movie_id, library_id, '' AS library_name, dir_path, file_name, is_dis
   duration_sec, video_bitrate, frame_rate, width, height, container,
   ffprobe_json, ffprobe_version, ffprobe_at,
   nfo_path, subtitle_languages, has_external_subtitle, scanned_at, created_at, updated_at
-FROM movie_files WHERE library_id = ? AND dir_path = ?`, libraryID, dirPath)
+FROM movie_files WHERE library_id = ? AND dir_path = ? AND file_name = ?`, libraryID, dirPath, fileName)
 	mf, err := scanMovieFile(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -32,8 +32,9 @@ FROM movie_files WHERE library_id = ? AND dir_path = ?`, libraryID, dirPath)
 }
 
 // UpsertMovieFile inserts a new movie_file or updates an existing one keyed by
-// (library_id, dir_path). On update the parsed fields are rewritten; ffprobe
-// fields are kept unless re-probed (caller passes 0 to mean "unknown/keep").
+// (library_id, dir_path, file_name). On update the parsed fields are
+// rewritten; ffprobe fields are kept unless re-probed (caller passes 0 to mean
+// "unknown/keep").
 func (s *Store) UpsertMovieFile(ctx context.Context, mf *model.MovieFile) error {
 	now := time.Now().Unix()
 	if mf.CreatedAt == 0 {
@@ -62,7 +63,7 @@ func (s *Store) UpsertMovieFile(ctx context.Context, mf *model.MovieFile) error 
 	}
 	movieID := nullableInt64(mf.MovieID)
 
-	existing, err := s.FindMovieFileByRelease(ctx, mf.LibraryID, mf.DirPath)
+	existing, err := s.FindMovieFileByRelease(ctx, mf.LibraryID, mf.DirPath, mf.FileName)
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return err
 	}
@@ -255,8 +256,10 @@ FROM subtitles WHERE movie_file_id = ? ORDER BY "order"`, movieFileID)
 	return out, rows.Err()
 }
 
-// RemoveStaleMovieFiles deletes movie_files for a library whose dir_path is no
-// longer present in keep set. Called at the end of a scan to prune deletions.
+// RemoveStaleMovieFiles deletes movie_files for a library whose (dir, file)
+// release key is no longer present in the keep set. Called at the end of a
+// scan to prune deletions. An empty keep set is honoured (the library is
+// genuinely empty); the scanner guards against a failed walk before calling.
 func (s *Store) RemoveStaleMovieFiles(ctx context.Context, libraryID int64, keep []string) (int64, error) {
 	if len(keep) == 0 {
 		res, err := s.DB.ExecContext(ctx,
@@ -270,15 +273,18 @@ func (s *Store) RemoveStaleMovieFiles(ctx context.Context, libraryID int64, keep
 	placeholders := ""
 	args := make([]interface{}, 0, len(keep)+1)
 	args = append(args, libraryID)
-	for i, dir := range keep {
+	for i, key := range keep {
 		if i > 0 {
 			placeholders += ","
 		}
 		placeholders += "?"
-		args = append(args, dir)
+		args = append(args, key)
 	}
+	// NOTE: SQLite string literals have no \xNN escape ('\x00' truncates to
+	// ''), so the key separator must be built with char(0) to match the
+	// Go-side releaseKey joiner.
 	res, err := s.DB.ExecContext(ctx,
-		`DELETE FROM movie_files WHERE library_id = ? AND dir_path NOT IN (`+placeholders+`)`,
+		`DELETE FROM movie_files WHERE library_id = ? AND dir_path || char(0) || file_name NOT IN (`+placeholders+`)`,
 		args...)
 	if err != nil {
 		return 0, err

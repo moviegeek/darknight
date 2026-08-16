@@ -171,10 +171,22 @@ type ExternalIDs struct {
 type SearchResult struct {
 	ID           int64   `json:"id"`
 	Title        string  `json:"title"`
+	OriginalTitle string `json:"original_title"`
 	ReleaseDate  string  `json:"release_date"`
 	Overview     string  `json:"overview"`
 	PosterPath   string  `json:"poster_path"`
 	VoteAverage  float64 `json:"vote_average"`
+	Popularity   float64 `json:"popularity"`
+}
+
+// Year returns the release year parsed from ReleaseDate, or 0.
+func (sr *SearchResult) Year() int {
+	if len(sr.ReleaseDate) >= 4 {
+		if y, err := strconv.Atoi(sr.ReleaseDate[:4]); err == nil {
+			return y
+		}
+	}
+	return 0
 }
 
 // FindResult is the response from /find/{external_id}.
@@ -251,6 +263,34 @@ func (c *Client) SearchMovie(ctx context.Context, query string, year int) (*Sear
 		return nil, ErrNotFound
 	}
 	return &resp.Results[0], nil
+}
+
+// SearchMovieAll is the candidate-oriented search used by the matcher: it
+// returns the full result list (capped at limit, TMDB's page size) instead of
+// just the first row, so the caller can score every candidate. The year is
+// never sent as a hard filter here - scoring compares years instead, because a
+// wrongly parsed year must not zero out the results.
+func (c *Client) SearchMovieAll(ctx context.Context, query string, limit int) ([]SearchResult, error) {
+	if !c.Enabled() {
+		return nil, ErrNoAPIKey
+	}
+	q := url.Values{}
+	q.Set("query", query)
+	q.Set("include_adult", "false")
+	q.Set("page", "1")
+	var resp struct {
+		Results []SearchResult `json:"results"`
+	}
+	if err := c.get(ctx, "/search/movie?"+q.Encode(), &resp); err != nil {
+		return nil, err
+	}
+	if len(resp.Results) == 0 {
+		return nil, ErrNotFound
+	}
+	if limit > 0 && len(resp.Results) > limit {
+		resp.Results = resp.Results[:limit]
+	}
+	return resp.Results, nil
 }
 
 // GetCollection fetches /collection/{id}.

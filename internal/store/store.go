@@ -62,7 +62,51 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	// Unicode-dependent backfill that SQL cannot express: migration 010 adds
+	// movies.match_key, but the case/diacritic folding lives in Go.
+	if err := s.backfillMatchKeys(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("backfill match_key: %w", err)
+	}
 	return s, nil
+}
+
+// backfillMatchKeys fills movies.match_key for rows that still have it empty
+// (existing rows after migration 010, or rows written by an older binary).
+// Idempotent and cheap: the WHERE clause matches nothing once caught up.
+func (s *Store) backfillMatchKeys(ctx context.Context) error {
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT id, title FROM movies WHERE match_key = '' AND title != ''`)
+	if err != nil {
+		return err
+	}
+	type pending struct {
+		id  int64
+		key string
+	}
+	var todo []pending
+	for rows.Next() {
+		var id int64
+		var title string
+		if err := rows.Scan(&id, &title); err != nil {
+			rows.Close()
+			return err
+		}
+		if k := MatchKey(title); k != "" {
+			todo = append(todo, pending{id, k})
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, p := range todo {
+		if _, err := s.DB.ExecContext(ctx,
+			`UPDATE movies SET match_key = ? WHERE id = ?`, p.key, p.id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // buildDSN turns a bare file path into a modernc/sqlite DSN with pragmas tuned

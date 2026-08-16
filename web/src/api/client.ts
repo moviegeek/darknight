@@ -12,10 +12,13 @@ import type {
   MovieFacets,
   MovieFile,
   MovieFileDetail,
+  MatchResponse,
   MovieListResponse,
   MovieQuery,
+  RenameResponse,
   SqlResult,
   TableInfo,
+  CandidatesResponse,
 } from "./types";
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
@@ -103,3 +106,31 @@ export const execSQL = (sql: string, write: boolean) =>
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ sql, write }),
   });
+
+// ----- manual matching & rename -----
+export const searchCandidates = (q: string, movieId?: number, year?: number) =>
+  http<CandidatesResponse>(
+    `/api/movies/${movieId ?? 0}/candidates?${new URLSearchParams({
+      q,
+      ...(movieId ? { movie_id: String(movieId) } : {}),
+      ...(year ? { year: String(year) } : {}),
+    })}`
+  );
+export const matchMovie = (movieId: number, tmdbId: number) =>
+  http<MatchResponse>(`/api/movies/${movieId}/match`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tmdb_id: tmdbId }),
+  });
+export const unmatchMovie = (movieId: number) =>
+  http<{ movie_id: number; status: string }>(`/api/movies/${movieId}/unmatch`, {
+    method: "POST",
+  });
+export const renameMovieFile = (movieId: number, fileId: number, dryRun: boolean) =>
+  http<RenameResponse>(
+    `/api/movies/${movieId}/rename?${new URLSearchParams({
+      file_id: String(fileId),
+      dry_run: dryRun ? "1" : "0",
+    })}`,
+    { method: "POST" }
+  );

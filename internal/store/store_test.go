@@ -314,8 +314,9 @@ func TestMovieFileUpsertAndTracks(t *testing.T) {
 		t.Fatalf("count HDR10 = %d, want 1", n)
 	}
 
-	// stale-file pruning: keep nothing => movie_file deleted.
-	pruned, err := s.RemoveStaleMovieFiles(ctx, lib.ID, nil)
+	// stale-file pruning: keep a different release key => old movie_file deleted,
+	// and the empty-keep guard prunes nothing even when the library has rows.
+	pruned, err := s.RemoveStaleMovieFiles(ctx, lib.ID, []string{"/movies/Casino\x00Other.mkv"})
 	if err != nil {
 		t.Fatalf("prune: %v", err)
 	}
@@ -386,7 +387,7 @@ func TestMovieFile_FFProbeCacheRoundTrip(t *testing.T) {
 		t.Fatalf("insert movie_file: %v", err)
 	}
 
-	got, err := s.FindMovieFileByRelease(ctx, lib.ID, "/movies/Heat")
+	got, err := s.FindMovieFileByRelease(ctx, lib.ID, "/movies/Heat", "Heat.mkv")
 	if err != nil {
 		t.Fatalf("find: %v", err)
 	}

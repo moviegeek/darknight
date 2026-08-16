@@ -24,6 +24,24 @@ const SORTS: Array<{ value: string; label: string }> = [
   { value: "vote_average", label: "评分" },
   { value: "added", label: "添加时间" },
 ];
+// Data-health buckets: describe a broken/incomplete local index, not the film.
+// "unmatched" is the union of the two problem classes below it, so its count
+// is not their sum.
+const MATCH_ISSUES: Array<{ value: string; label: string; hint: string }> = [
+  { value: "unmatched", label: "有问题", hint: "无文件或缺 TMDB 信息" },
+  { value: "no_files", label: "无文件", hint: "有电影条目，但没有任何电影文件" },
+  { value: "no_tmdb", label: "缺 TMDB", hint: "有文件但条目信息不全（无 TMDB id，因此无封面）" },
+  { value: "multi_version", label: "多版本", hint: "同一部电影有多个文件" },
+];
+// Match state machine: how this row got its tmdb_id. "pending" rows have
+// top-5 candidate lists stored on the row, awaiting manual confirmation;
+// "manual" rows are human-confirmed and immune to automatic re-matching.
+const MATCH_STATUSES: Array<{ value: string; label: string; hint: string }> = [
+  { value: "matched", label: "已匹配", hint: "自动匹配成功，详情完整" },
+  { value: "pending", label: "待审核", hint: "matcher 找到候选但分数不够（60-84），已存 top-5 供人工挑" },
+  { value: "unmatched", label: "未匹配", hint: "matcher 找不到 60 分以上候选" },
+  { value: "manual", label: "手动", hint: "人工指定过，永不被自动覆盖" },
+];
 
 export function FilterPanel({
   query,
@@ -58,6 +76,8 @@ export function FilterPanel({
     query.subtitle_lang !== undefined ||
     query.external_subtitle !== undefined ||
     query.no_chi_subtitle !== undefined ||
+    query.match_issue !== undefined ||
+    query.match_status !== undefined ||
     query.watched !== undefined;
   // count(dimension, value) looks up the facet count for one chip; undefined
   // when counts are hidden or the facets request hasn't resolved yet, in
@@ -241,6 +261,37 @@ export function FilterPanel({
         ))}
       </FilterGroup>
 
+      <FilterGroup label="匹配状态">
+        <div className="mb-1 text-[10px] uppercase tracking-wide text-ink-dim">数据健康</div>
+        {MATCH_ISSUES.map((mi) => (
+          <Chip
+            key={mi.value}
+            active={query.match_issue === mi.value}
+            count={count("match_issue", mi.value)}
+            title={mi.hint}
+            onClick={() =>
+              set({ match_issue: query.match_issue === mi.value ? undefined : mi.value, offset: 0 })
+            }
+          >
+            {mi.label}
+          </Chip>
+        ))}
+        <div className="mb-1 mt-2 text-[10px] uppercase tracking-wide text-ink-dim">状态</div>
+        {MATCH_STATUSES.map((ms) => (
+          <Chip
+            key={ms.value}
+            active={query.match_status === ms.value}
+            count={count("match_status", ms.value)}
+            title={ms.hint}
+            onClick={() =>
+              set({ match_status: query.match_status === ms.value ? undefined : ms.value, offset: 0 })
+            }
+          >
+            {ms.label}
+          </Chip>
+        ))}
+      </FilterGroup>
+
       <FilterGroup label="排序">
         {SORTS.map((s) => (
           <Chip
@@ -279,14 +330,16 @@ function Chip({
   onClick,
   children,
   count,
+  title,
 }: {
   active: boolean;
   onClick: () => void;
   children: React.ReactNode;
   count?: number;
+  title?: string;
 }) {
   return (
-    <button onClick={onClick} className={cn("chip", active && "chip-active")}>
+    <button onClick={onClick} title={title} className={cn("chip", active && "chip-active")}>
       {children}
       {count !== undefined && <span className="ml-1 text-ink-dim">({count})</span>}
     </button>

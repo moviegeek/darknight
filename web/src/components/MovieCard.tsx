@@ -82,6 +82,41 @@ export function TechBadges({
   );
 }
 
+// Data-health badges: which of the two "unmatched" problem classes this movie
+// falls into, and whether several files map to it. Rendered top-right so they
+// never overlap the technical badges on the left.
+export function HealthBadges({
+  movie,
+  className,
+}: {
+  movie: Pick<MovieListItem, "has_files" | "file_count" | "tmdb_id">;
+  className?: string;
+}) {
+  const noFiles = !movie.has_files;
+  const noTmdb = !movie.tmdb_id;
+  const multi = movie.file_count > 1;
+  if (!noFiles && !noTmdb && !multi) return null;
+  return (
+    <div className={cn("flex flex-wrap gap-1", className)}>
+      {noFiles && (
+        <span className="badge badge-warn" title="有电影条目，但没有任何电影文件">
+          无文件
+        </span>
+      )}
+      {noTmdb && (
+        <span className="badge badge-warn" title="条目信息不全：缺 TMDB id（因此没有封面）">
+          缺 TMDB
+        </span>
+      )}
+      {multi && (
+        <span className="badge badge-multi" title={`${movie.file_count} 个文件映射到这部电影`}>
+          ×{movie.file_count}
+        </span>
+      )}
+    </div>
+  );
+}
+
 export function MovieCard({ movie, size = 160 }: { movie: MovieListItem; size?: number }) {
   const poster = tmdbImage(movie.poster_path, "w500");
   const { primary, secondary } = movieTitleLines(movie);
@@ -109,6 +144,9 @@ export function MovieCard({ movie, size = 160 }: { movie: MovieListItem; size?: 
         )}
         <div className="absolute left-2 top-2">
           <TechBadges movie={movie} className="flex-col" />
+        </div>
+        <div className="absolute right-2 top-2">
+          <HealthBadges movie={movie} className="flex-col items-end" />
         </div>
       </div>
       <div className="p-2.5">

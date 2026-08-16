@@ -26,11 +26,13 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/moviegeek/darknight/internal/ffprobe"
+	"github.com/moviegeek/darknight/internal/matcher"
 	"github.com/moviegeek/darknight/internal/metadata"
 	"github.com/moviegeek/darknight/internal/model"
 	"github.com/moviegeek/darknight/internal/nfo"
@@ -61,6 +63,10 @@ type Scanner struct {
 	// Enricher, when non-nil and enabled, fills TMDB metadata for each movie
 	// discovered during a scan. Safe to leave nil for offline-only mode.
 	Enricher *metadata.Enricher
+	// Matcher, when non-nil, runs scored TMDB candidate matching for movies
+	// without an authoritative id (no NFO tmdb/imdb id). Leave nil to fall
+	// back to the legacy enrich-only behaviour.
+	Matcher *matcher.Matcher
 }
 
 // probeVersion returns the effective probe version for the stale-cache check.
@@ -96,6 +102,14 @@ func (sc *Scanner) ScanLibrary(ctx context.Context, lib *model.Library) (Stats, 
 	seen := make([]string, 0, 256)
 	sc.Logger.Info("scanning library", "library", lib.Name, "root", lib.RootPath)
 
+	// A missing/unreadable root is a hard error: pruning on a failed walk
+	// would wipe the library. With this guard, an empty `seen` after a
+	// successful walk means the library is genuinely empty and pruning is
+	// correct.
+	if fi, err := os.Stat(lib.RootPath); err != nil || !fi.IsDir() {
+		return stats, fmt.Errorf("library root not accessible: %s", lib.RootPath)
+	}
+
 	err := filepath.WalkDir(lib.RootPath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			// a missing root is fatal; a missing subdir is just logged.
@@ -128,24 +142,24 @@ func (sc *Scanner) ScanLibrary(ctx context.Context, lib *model.Library) (Stats, 
 			return filepath.SkipDir
 		}
 
-		release, kind, ok := classifyRelease(path)
+		files, mainFile, kind, ok := classifyRelease(path)
 		if !ok {
 			return nil // descend further
 		}
-		sc.Logger.Debug("found release", "dir", rel, "kind", kindString(kind), "main", release)
-		seen = append(seen, rel)
+		sc.Logger.Debug("found release", "dir", rel, "kind", kindString(kind), "files", len(files), "main", mainFile)
 
-		added, updated, unchanged, err := sc.scanRelease(ctx, lib, path, rel, release, kind)
-		switch {
-		case err != nil:
+		// File-grained releases: every non-noise video file in the dir is its
+		// own movie_files row (multi-version and flat-collection packs), so
+		// scanRelease reports the release keys it persisted plus per-FILE
+		// outcome counts for the stats.
+		keys, nAdded, nUpdated, nUnchanged, err := sc.scanRelease(ctx, lib, path, rel, files, mainFile, kind)
+		seen = append(seen, keys...)
+		stats.Added += nAdded
+		stats.Updated += nUpdated
+		stats.Unchanged += nUnchanged
+		if err != nil {
 			stats.Errors++
 			sc.Logger.Warn("scan release", "dir", path, "err", err)
-		case added:
-			stats.Added++
-		case updated:
-			stats.Updated++
-		case unchanged:
-			stats.Unchanged++
 		}
 		if kind == kindDisc {
 			// a disc release is itself a leaf; do not descend into BDMV/STREAM.
@@ -207,92 +221,176 @@ func prevMtime(mf *model.MovieFile) int64 {
 	return mf.FileModified
 }
 
-// classifyRelease inspects dir and returns the chosen main file path, the
-// release kind, and ok=false if dir is not yet a leaf (no video / BDMV).
-func classifyRelease(dir string) (mainFile string, kind releaseKind, ok bool) {
+// skipFileRe matches video-file basenames that are bonus material, not the
+// feature: samples, trailers, promos, menus, extras parts.
+var skipFileRe = regexp.MustCompile(`(?i)(^|[.\-_])(sample|trailer|promo|menu|featurette|extras?\.\d+)([.\-_]|$)`)
+
+// skipDirNames are directory names that hold bonus material only ("extras",
+// "Behind The Scenes"); their files are not releases.
+var skipDirNames = map[string]bool{
+	"extras": true, "extra": true, "behind the scenes": true, "bonus": true,
+}
+
+// releaseKey is the movie_files uniqueness key: dir + file_name joined with a
+// NUL byte (file_name is '' for disc releases).
+func releaseKey(relDir, fileName string) string {
+	return relDir + "\x00" + fileName
+}
+
+// classifyRelease inspects dir and returns its video files (largest first,
+// noise files skipped), the release kind, and ok=false when dir is not yet a
+// leaf (no video / BDMV). For file releases every listed file becomes its own
+// movie_files row; mainFile keeps its "largest file" meaning for probe/title
+// fallbacks.
+func classifyRelease(dir string) (files []string, mainFile string, kind releaseKind, ok bool) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return "", 0, false
+		return nil, "", 0, false
+	}
+	if skipDirNames[strings.ToLower(filepath.Base(dir))] {
+		return nil, "", 0, false
 	}
 	// Blu-ray disc folder?
 	for _, e := range entries {
 		if e.IsDir() && strings.EqualFold(e.Name(), "BDMV") {
-			return "", kindDisc, true
+			return nil, "", kindDisc, true
 		}
 	}
-	// pick the largest video file in the dir
-	var best string
-	var bestSize int64
+	type sized struct {
+		name string
+		size int64
+	}
+	var vids []sized
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
 		}
-		ext := strings.ToLower(filepath.Ext(e.Name()))
+		name := e.Name()
+		// macOS AppleDouble sidecars ("._Movie.mkv") look like videos but are
+		// Finder metadata; skip them like hidden files.
+		if strings.HasPrefix(name, "._") || strings.HasPrefix(name, ".") {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(name))
 		if !videoExtensions[ext] {
+			continue
+		}
+		if skipFileRe.MatchString(name) {
 			continue
 		}
 		info, err := e.Info()
 		if err != nil {
 			continue
 		}
-		if info.Size() > bestSize {
-			bestSize = info.Size()
-			best = e.Name()
+		vids = append(vids, sized{name, info.Size()})
+	}
+	if len(vids) == 0 {
+		return nil, "", 0, false
+	}
+	sort.Slice(vids, func(i, j int) bool {
+		if vids[i].size != vids[j].size {
+			return vids[i].size > vids[j].size
 		}
+		return vids[i].name < vids[j].name
+	})
+	for _, v := range vids {
+		files = append(files, v.name)
 	}
-	if best == "" {
-		return "", 0, false
-	}
-	return filepath.Join(dir, best), kindFile, true
+	return files, filepath.Join(dir, vids[0].name), kindFile, true
 }
 
-// scanRelease parses one release dir and upserts its movie_file. Returns
-// (added, updated, unchanged, err). When unchanged, ffprobe and the
-// audio/subtitle rewrite are skipped entirely.
+// scanRelease parses one release dir and upserts a movie_file for EVERY video
+// file in it (multi-version releases and flat collection packs). Returns the
+// persisted release keys (dir + "\x00" + file) plus per-FILE outcome counts;
+// when a file is unchanged, its ffprobe and stream rewrite are skipped.
 func (sc *Scanner) scanRelease(
 	ctx context.Context,
 	lib *model.Library,
-	absDir, relDir, mainFile string, kind releaseKind,
-) (bool, bool, bool, error) {
+	absDir, relDir string, files []string, mainFile string, kind releaseKind,
+) (keys []string, added, updated, unchanged int, err error) {
 	dirName := filepath.Base(absDir)
-	meta := parser.ParseTitle(dirName)
+	dirMeta := parser.ParseTitle(dirName)
 
 	// gather side files (.nfo, external subtitles)
 	nfoPath, externalSubs := scanSideFiles(absDir)
 
-	// determine size + mtime of the main artefact
-	var size int64
-	var mtime int64
-	if kind == kindFile {
-		fi, err := os.Stat(mainFile)
-		if err != nil {
-			return false, false, false, fmt.Errorf("stat main file: %w", err)
+	if kind == kindDisc {
+		k, a, u, un, err := sc.scanDisc(ctx, lib, absDir, relDir, dirMeta, dirName, nfoPath, externalSubs)
+		if k != "" {
+			keys = append(keys, k)
 		}
-		size = fi.Size()
-		mtime = fi.ModTime().Unix()
-	} else {
-		// disc: sum STREAM/*.m2ts sizes, mtime = dir mtime
-		size = discSize(absDir)
-		fi, _ := os.Stat(absDir)
-		if fi != nil {
-			mtime = fi.ModTime().Unix()
-		}
+		return keys, boolToInt(a), boolToInt(u), boolToInt(un), err
 	}
 
-	// incremental check: skip ffprobe if (size, mtime) unchanged
-	existing, err := sc.Store.FindMovieFileByRelease(ctx, lib.ID, relDir)
+	for _, fname := range files {
+		k, a, u, un, err := sc.scanOneFile(ctx, lib, absDir, relDir, fname, mainFile,
+			dirMeta, dirName, nfoPath, externalSubs)
+		keys = append(keys, k)
+		if err != nil {
+			sc.Logger.Warn("scan file", "dir", absDir, "file", fname, "err", err)
+			continue
+		}
+		added += boolToInt(a)
+		updated += boolToInt(u)
+		unchanged += boolToInt(un)
+	}
+	return keys, added, updated, unchanged, nil
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// scanOneFile handles one video file of a release dir: parse (file name first,
+// dir name as fallback context), upsert movie + movie_file, ffprobe unless
+// unchanged. externalSubs are shared by every file in the dir.
+func (sc *Scanner) scanOneFile(
+	ctx context.Context,
+	lib *model.Library,
+	absDir, relDir, fileName, mainFile string,
+	dirMeta parser.FileMeta, dirName, nfoPath string,
+	externalSubs []model.Subtitle,
+) (string, bool, bool, bool, error) {
+	absFile := filepath.Join(absDir, fileName)
+
+	// Parse the file name (extension stripped - the trailing ".mkv" would
+	// otherwise glue onto the release group and defeat the group peel); fall
+	// back to the dir's parse for anything the file name doesn't carry (a
+	// bare "00001.m2ts" style name has no title).
+	stem := strings.TrimSuffix(fileName, filepath.Ext(fileName))
+	meta := parser.ParseTitle(stem)
+	if meta.Title == "" {
+		meta.Title = dirMeta.Title
+		meta.Year = dirMeta.Year
+	}
+	rawName := stem
+	if meta.Title == "" {
+		meta = dirMeta
+		rawName = dirName
+	}
+
+	fi, err := os.Stat(absFile)
+	if err != nil {
+		return releaseKey(relDir, fileName), false, false, false, fmt.Errorf("stat main file: %w", err)
+	}
+	size, mtime := fi.Size(), fi.ModTime().Unix()
+
+	existing, err := sc.Store.FindMovieFileByRelease(ctx, lib.ID, relDir, fileName)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		return false, false, false, err
+		return releaseKey(relDir, fileName), false, false, false, err
 	}
 	unchanged := existing != nil &&
 		existing.FileSize == size &&
 		existing.FileModified == mtime &&
 		existing.DurationSec != 0 && // never skip probing a never-probed file
 		existing.FFProbeVersion == sc.probeVersion() // stale cache -> re-probe
-	sc.Logger.Debug("incremental check", "dir", relDir, "unchanged", unchanged,
+	sc.Logger.Debug("incremental check", "dir", relDir, "file", fileName, "unchanged", unchanged,
 		"size", size, "mtime", mtime, "prev_size", prevSize(existing), "prev_mtime", prevMtime(existing))
 
-	mf := buildMovieFile(lib, relDir, mainFile, kind, size, mtime, meta, dirName, nfoPath)
+	mf := buildMovieFile(lib, relDir, fileName, kindFile, size, mtime, meta, rawName, nfoPath)
 	if existing != nil {
 		mf.ID = existing.ID
 		mf.MovieID = existing.MovieID
@@ -313,32 +411,31 @@ func (sc *Scanner) scanRelease(
 	// resolve / upsert the logical movie; enrich with TMDB when (re)scanned
 	movieID, err := sc.upsertMovieFromRelease(ctx, mf, meta, nfoPath, unchanged)
 	if err != nil {
-		sc.Logger.Warn("upsert movie", "dir", absDir, "err", err)
+		sc.Logger.Warn("upsert movie", "dir", absDir, "file", fileName, "err", err)
 	}
 	mf.MovieID = movieID
 
-	// ffprobe the main file (skip when unchanged)
+	// ffprobe the file (skip when unchanged)
 	var audioTracks []model.AudioTrack
 	var subtitles []model.Subtitle
-	if !unchanged && kind == kindFile {
-		sc.Logger.Debug("ffprobe start", "file", mainFile)
-		if pr, raw, err := sc.FFProbe(ctx, mainFile); err == nil {
+	if !unchanged {
+		sc.Logger.Debug("ffprobe start", "file", absFile)
+		if pr, raw, err := sc.FFProbe(ctx, absFile); err == nil {
 			applyProbe(mf, pr)
 			audioTracks = probeAudioTracks(pr)
 			subtitles = probeSubtitleStreams(pr)
 			mf.FFProbeJSON = string(raw)
 			mf.FFProbeVersion = sc.probeVersion()
 			mf.FFProbeAt = time.Now().Unix()
-			sc.Logger.Debug("ffprobe done", "file", mainFile,
+			sc.Logger.Debug("ffprobe done", "file", absFile,
 				"duration", mf.DurationSec, "audio", len(audioTracks), "subs", len(subtitles))
 		} else {
-			sc.Logger.Warn("ffprobe", "file", mainFile, "err", err)
+			sc.Logger.Warn("ffprobe", "file", absFile, "err", err)
 		}
 	}
 	subtitles = append(subtitles, externalSubs...)
 	sortStreams(audioTracks, subtitles)
 
-	// also compute subtitle aggregation for the movie_file row
 	if len(subtitles) > 0 {
 		mf.SubtitleLanguages = subtitleLanguages(subtitles)
 		for _, s := range subtitles {
@@ -349,9 +446,9 @@ func (sc *Scanner) scanRelease(
 		}
 	}
 
-	updated := existing != nil && !unchanged
+	updatedFlag := existing != nil && !unchanged
 	if err := sc.Store.UpsertMovieFile(ctx, mf); err != nil {
-		return false, false, false, fmt.Errorf("upsert movie_file: %w", err)
+		return releaseKey(relDir, fileName), false, false, false, fmt.Errorf("upsert movie_file: %w", err)
 	}
 	if !unchanged {
 		if err := sc.Store.ReplaceAudioTracks(ctx, mf.ID, audioTracks); err != nil {
@@ -365,30 +462,82 @@ func (sc *Scanner) scanRelease(
 	switch {
 	case unchanged:
 		outcome = "unchanged"
-	case updated:
+	case updatedFlag:
 		outcome = "updated"
 	}
-	sc.Logger.Debug("release done", "dir", relDir, "outcome", outcome, "movie_id", mf.MovieID)
-	switch {
-	case unchanged:
-		return false, false, true, nil
-	case updated:
-		return false, true, false, nil
-	default:
-		return true, false, false, nil
+	sc.Logger.Debug("file done", "dir", relDir, "file", fileName, "outcome", outcome, "movie_id", mf.MovieID)
+	return releaseKey(relDir, fileName), existing == nil, updatedFlag, unchanged, nil
+}
+
+// scanDisc handles a BDMV folder release: one movie_files row with
+// file_name='' and size summed over BDMV/STREAM.
+func (sc *Scanner) scanDisc(
+	ctx context.Context,
+	lib *model.Library,
+	absDir, relDir string,
+	dirMeta parser.FileMeta, dirName, nfoPath string,
+	externalSubs []model.Subtitle,
+) (string, bool, bool, bool, error) {
+	size := discSize(absDir)
+	var mtime int64
+	if fi, _ := os.Stat(absDir); fi != nil {
+		mtime = fi.ModTime().Unix()
 	}
+
+	existing, err := sc.Store.FindMovieFileByRelease(ctx, lib.ID, relDir, "")
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return releaseKey(relDir, ""), false, false, false, err
+	}
+	unchanged := existing != nil &&
+		existing.FileSize == size &&
+		existing.FileModified == mtime
+
+	mf := buildMovieFile(lib, relDir, "", kindDisc, size, mtime, dirMeta, dirName, nfoPath)
+	if existing != nil {
+		mf.ID = existing.ID
+		mf.MovieID = existing.MovieID
+	}
+
+	movieID, err := sc.upsertMovieFromRelease(ctx, mf, dirMeta, nfoPath, unchanged)
+	if err != nil {
+		sc.Logger.Warn("upsert movie", "dir", absDir, "err", err)
+	}
+	mf.MovieID = movieID
+
+	subtitles := append([]model.Subtitle(nil), externalSubs...)
+	sortStreams(nil, subtitles)
+	if len(subtitles) > 0 {
+		mf.SubtitleLanguages = subtitleLanguages(subtitles)
+		for _, s := range subtitles {
+			if !s.IsEmbedded {
+				mf.HasExternalSubtitle = true
+				break
+			}
+		}
+	}
+	if err := sc.Store.UpsertMovieFile(ctx, mf); err != nil {
+		return releaseKey(relDir, ""), false, false, false, fmt.Errorf("upsert movie_file: %w", err)
+	}
+	if !unchanged {
+		if err := sc.Store.ReplaceSubtitles(ctx, mf.ID, subtitles); err != nil {
+			sc.Logger.Warn("replace subs", "err", err)
+		}
+	}
+	sc.Logger.Debug("disc done", "dir", relDir, "movie_id", mf.MovieID)
+	return releaseKey(relDir, ""), existing == nil, !unchanged && existing != nil, unchanged, nil
 }
 
 // buildMovieFile fills the parsed fields of a MovieFile from FileMeta.
-func buildMovieFile(lib *model.Library, relDir, mainFile string, kind releaseKind,
-	size, mtime int64, meta parser.FileMeta, dirName, nfoPath string) *model.MovieFile {
+// fileName is the release's own video file; mainFile arg was dropped in favour
+// of the explicit fileName ("" for discs).
+func buildMovieFile(lib *model.Library, relDir, fileName string, kind releaseKind,
+	size, mtime int64, meta parser.FileMeta, rawName, nfoPath string) *model.MovieFile {
 	mf := &model.MovieFile{
-		LibraryID: lib.ID, DirPath: relDir, FileSize: size, FileModified: mtime,
-		RawName: dirName, NFOPath: nfoPath,
+		LibraryID: lib.ID, DirPath: relDir, FileName: fileName,
+		FileSize: size, FileModified: mtime,
+		RawName: rawName, NFOPath: nfoPath,
 	}
-	if kind == kindFile {
-		mf.FileName = filepath.Base(mainFile)
-	} else {
+	if kind == kindDisc {
 		mf.IsDisc = true
 	}
 	mf.ReleaseGroup = string(meta.ReleaseGroup)
@@ -414,11 +563,14 @@ func buildMovieFile(lib *model.Library, relDir, mainFile string, kind releaseKin
 }
 
 // upsertMovieFromRelease creates or finds the logical movie for this release.
-// Priority for the seed row: .nfo ids > (parsed title, year). When unchanged is
-// false (added or updated), and an Enricher is wired up, the movie is then
-// enriched with TMDB metadata - which overwrites the seed fields with
-// authoritative values (poster, overview, genres, credits, ...). When unchanged
-// is true the previous TMDB data is left in place.
+//
+// Matching pipeline (only when the file changed and TMDB is available):
+//  1. NFO ids (tmdb/imdb) are authoritative - enrich directly.
+//  2. Otherwise the matcher runs: cleaned SearchVariants -> scored TMDB
+//     candidates -> auto-accept (>=85) enriches immediately; pending (60-84)
+//     stores the best candidates on the row for manual review; below that the
+//     row is left unmatched with the failure reason recorded.
+//  3. A manual match_status ('manual') is never re-matched automatically.
 func (sc *Scanner) upsertMovieFromRelease(ctx context.Context, mf *model.MovieFile, meta parser.FileMeta, nfoPath string, unchanged bool) (int64, error) {
 	m := &model.Movie{Title: meta.Title, Year: meta.Year}
 	if nfoPath != "" {
@@ -448,12 +600,81 @@ func (sc *Scanner) upsertMovieFromRelease(ctx context.Context, mf *model.MovieFi
 		return 0, err
 	}
 	sc.Logger.Debug("upsert movie", "title", m.Title, "year", m.Year, "movie_id", m.ID)
-	// Enrich only on add / update; the cached TMDB row persists otherwise.
-	if !unchanged && sc.Enricher != nil && sc.Enricher.Enabled() {
+
+	// Whether to run matching is a property of the MOVIE ROW, not of the file's
+	// bytes. `unchanged` only means "this file did not change, skip ffprobe":
+	// gating the matcher on it left rows stuck forever at tmdb_id=NULL with
+	// match_attempts=0 (observed: 169 rows after files were re-seeded onto new
+	// movie rows). A row that already has a tmdb_id, or that a human confirmed,
+	// needs nothing; anything else is (re)matched even when the file is
+	// untouched.
+	if m.TMDBID != 0 || m.MatchStatus == model.MatchStatusManual {
+		// Re-enrich only when the file actually changed; the cached TMDB row
+		// stands otherwise.
+		if !unchanged && sc.Enricher != nil && sc.Enricher.Enabled() &&
+			m.TMDBID != 0 && m.MatchStatus != model.MatchStatusManual {
+			if _, err := sc.Enricher.EnrichMovie(ctx, m); err != nil {
+				sc.Logger.Warn("tmdb enrich", "movie", m.Title, "err", err)
+			}
+		}
+		return m.ID, nil
+	}
+
+	// NFO imdb_id without tmdb_id: let the enricher's /find chain resolve it,
+	// falling back to the matcher when it finds nothing.
+	if m.IMDBID != "" && sc.Enricher != nil && sc.Enricher.Enabled() {
 		if refreshed, err := sc.Enricher.EnrichMovie(ctx, m); err != nil {
 			sc.Logger.Warn("tmdb enrich", "movie", m.Title, "err", err)
-		} else {
-			sc.Logger.Debug("tmdb enrich done", "movie", m.Title, "movie_id", m.ID, "refreshed", refreshed)
+		} else if refreshed {
+			if err := sc.Store.SetMovieMatch(ctx, m.ID, m.TMDBID, model.MatchStatusMatched, 100, ""); err != nil {
+				sc.Logger.Warn("set match", "movie_id", m.ID, "err", err)
+			}
+			return m.ID, nil
+		}
+	}
+
+	// scored matcher path
+	if sc.Matcher != nil {
+		variants := parser.SearchVariants(m.Title)
+		res, err := sc.Matcher.Match(ctx, variants, m.Year)
+		if err != nil {
+			sc.Logger.Warn("match", "movie", m.Title, "err", err)
+			_ = sc.Store.SetMovieMatch(ctx, m.ID, 0, model.MatchStatusUnmatched, 0, "matcher error: "+err.Error())
+			return m.ID, nil
+		}
+		switch res.Decision {
+		case matcher.DecisionAccept:
+			// ApplyMatch handles the case where this tmdb_id already belongs to
+			// another row (the enriched row this release was orphaned from):
+			// the files move there and this seed shell is dropped.
+			if sc.Enricher != nil {
+				finalID, merged, err := sc.Enricher.ApplyMatch(ctx, m, res.Best.TMDBID, int(res.Best.Score))
+				if err != nil {
+					sc.Logger.Warn("apply match", "movie", m.Title, "err", err)
+					return m.ID, nil
+				}
+				if merged {
+					return finalID, nil
+				}
+				sc.Logger.Info("match accepted", "movie", m.Title,
+					"tmdb_id", res.Best.TMDBID, "score", res.Best.Score)
+				return finalID, nil
+			}
+			if err := sc.Store.SetMovieMatch(ctx, m.ID, res.Best.TMDBID, model.MatchStatusMatched, int(res.Best.Score), ""); err != nil {
+				sc.Logger.Warn("set match", "movie_id", m.ID, "err", err)
+			}
+			sc.Logger.Info("match accepted", "movie", m.Title, "tmdb_id", res.Best.TMDBID, "score", res.Best.Score)
+		case matcher.DecisionPending:
+			if err := sc.Store.SetMovieMatch(ctx, m.ID, 0, model.MatchStatusPending, int(res.Best.Score), res.Reason); err != nil {
+				sc.Logger.Warn("set match", "movie_id", m.ID, "err", err)
+			}
+			sc.Store.SetMatchCandidates(ctx, m.ID, res.Candidates)
+			sc.Logger.Info("match pending", "movie", m.Title, "best", res.Best.Title, "score", res.Best.Score)
+		default:
+			if err := sc.Store.SetMovieMatch(ctx, m.ID, 0, model.MatchStatusUnmatched, 0, res.Reason); err != nil {
+				sc.Logger.Warn("set match", "movie_id", m.ID, "err", err)
+			}
+			sc.Logger.Info("match failed", "movie", m.Title, "reason", res.Reason)
 		}
 	}
 	return m.ID, nil
@@ -527,6 +748,9 @@ func scanSideFiles(dir string) (nfoPath string, subs []model.Subtitle) {
 			continue
 		}
 		name := e.Name()
+		if strings.HasPrefix(name, "._") || strings.HasPrefix(name, ".") {
+			continue // hidden / macOS AppleDouble metadata
+		}
 		ext := strings.ToLower(filepath.Ext(name))
 		base := strings.TrimSuffix(name, filepath.Ext(name))
 		switch ext {

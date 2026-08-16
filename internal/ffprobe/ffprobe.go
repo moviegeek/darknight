@@ -48,7 +48,10 @@ type Stream struct {
 	Disposition    Disposition `json:"disposition"`
 	Tags           Tags   `json:"tags"`
 	// Side data carries Dolby Vision / HDR10+ metadata as a list of objects.
-	SideDataList []map[string]SideData `json:"side_data_list"`
+	// Values are RawMessage because side_data_type is a string in Matroska
+	// ("DOVI configuration record") but a numeric enum in MPEG-TS (e.g. 190);
+	// the DOVI/HDR10+ probes below decode leniently and ignore other shapes.
+	SideDataList []map[string]json.RawMessage `json:"side_data_list"`
 }
 
 // Disposition holds stream disposition flags.
@@ -64,11 +67,6 @@ type Disposition struct {
 
 // Tags is a free-form string map (title, language, ...).
 type Tags map[string]string
-
-// SideData is a side-data block (e.g. DOVI configuration record).
-type SideData struct {
-	SideDataType string `json:"side_data_type"`
-}
 
 // ProbeVersion is bumped whenever the probe command's flags change (e.g.
 // adding -show_chapters). The scanner treats a stored version mismatch as a
@@ -156,11 +154,15 @@ func (r *Result) SubtitleStreams() []Stream {
 }
 
 // HasDolbyVision reports whether the video stream carries a DOVI side-data
-// block.
+// block. MPEG-TS streams report side_data_type as a numeric enum; DOVI
+// configuration record is 0x190 (190) there.
 func (s *Stream) HasDolbyVision() bool {
 	for _, blocks := range s.SideDataList {
-		for _, sd := range blocks {
-			if strings.Contains(strings.ToLower(sd.SideDataType), "dovi") {
+		for k, raw := range blocks {
+			if strings.Contains(strings.ToLower(sideDataString(raw)), "dovi") {
+				return true
+			}
+			if k == "side_data_type" && sideDataString(raw) == "190" {
 				return true
 			}
 		}
@@ -172,14 +174,28 @@ func (s *Stream) HasDolbyVision() bool {
 // metadata.
 func (s *Stream) HasHDR10Plus() bool {
 	for _, blocks := range s.SideDataList {
-		for _, sd := range blocks {
-			t := strings.ToLower(sd.SideDataType)
+		for _, raw := range blocks {
+			t := strings.ToLower(sideDataString(raw))
 			if strings.Contains(t, "hdr10+") || strings.Contains(t, "hdr plus") {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// sideDataString decodes a side_data value that may be a JSON string or
+// number; anything else (objects, null) yields "".
+func sideDataString(raw json.RawMessage) string {
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var n json.Number
+	if err := json.Unmarshal(raw, &n); err == nil {
+		return n.String()
+	}
+	return ""
 }
 
 // FrameRate parses avg_frame_rate (returned as a fraction string like "24000/1001")

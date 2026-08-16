@@ -10,6 +10,7 @@ import {
   tmdbImage,
 } from "../api/client";
 import type { AudioTrack, CastResponse, MovieFile, MovieFileDetail, Subtitle } from "../api/types";
+import { ManualMatchButton } from "../components/ManualMatch";
 import {
   cn,
   audioChannelCountLabel,
@@ -98,13 +99,23 @@ export default function MoviePage() {
             </div>
           </div>
           <div className="flex-1 pt-32">
-            <div>
-              <h1 className="text-3xl font-bold text-ink">
-                {primary}
-                {movie.year ? <span className="ml-2 text-ink-muted">({movie.year})</span> : null}
-              </h1>
-              {secondary && <p className="mt-1 text-base text-ink-muted">{secondary}</p>}
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h1 className="text-3xl font-bold text-ink">
+                  {primary}
+                  {movie.year ? <span className="ml-2 text-ink-muted">({movie.year})</span> : null}
+                </h1>
+                {secondary && <p className="mt-1 text-base text-ink-muted">{secondary}</p>}
+              </div>
+              <div className="shrink-0 pt-1">
+                <ManualMatchButton movie={movie} files={files} />
+              </div>
             </div>
+            {!movie.tmdb_id && (
+              <div className="mt-3 rounded-md border border-rose-800 bg-rose-950/30 px-3 py-2 text-sm text-rose-200">
+                此电影缺少 TMDB 信息（无封面/简介）。点击右上角「手动匹配」搜索并修复。
+              </div>
+            )}
             <div className="mt-2 flex flex-wrap items-center gap-3 text-sm text-ink-muted">
               {movie.runtime > 0 && <span>{formatDuration(movie.runtime * 60)}</span>}
               {movie.vote_average > 0 && (

@@ -15,6 +15,9 @@ refs/
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
 
+# Local media-tree dumps used for scan/match analysis (same class as refs/)
+/media-*.txt
+
 # SQLite runtime database and wal/shm files
 *.db
 *.db-wal

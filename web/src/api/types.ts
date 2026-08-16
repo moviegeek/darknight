@@ -109,6 +109,7 @@ export interface CastResponse {
 
 export interface MovieListItem extends Movie {
   has_files: boolean;
+  file_count: number;
   best_resolution: string;
   best_source: string;
   best_hdr: string;
@@ -208,6 +209,11 @@ export interface MovieFacets {
   external_subtitle: number;
   no_chi_subtitle: number;
   watched: Record<string, number>;
+  // Data-health buckets. "unmatched" is the union of no_files + no_tmdb, so
+  // its count is not the sum of the two.
+  match_issue: Record<string, number>;
+  // Match state machine counts (matched/pending/unmatched/manual).
+  match_status: Record<string, number>;
 }
 
 // Query params for the movies list. Empty values are omitted.
@@ -227,6 +233,10 @@ export interface MovieQuery {
   subtitle_lang?: string;
   external_subtitle?: boolean;
   no_chi_subtitle?: boolean;
+  // Data-health filter: "unmatched" | "no_files" | "no_tmdb" | "multi_version".
+  match_issue?: string;
+  // Match state machine: "matched" | "pending" | "unmatched" | "manual".
+  match_status?: string;
   sort?: string;
   desc?: boolean;
   limit?: number;
@@ -254,4 +264,60 @@ export interface SqlResult {
   rows_affected: number;
   last_insert_id?: number;
   duration_ms: number;
+}
+
+// ----- manual matching & rename -----
+
+// One scored TMDB search result, as returned by the candidates endpoint and
+// stored on pending movie rows.
+export interface MatchCandidate {
+  tmdb_id: number;
+  title: string;
+  original_title: string;
+  year: number;
+  poster_path: string;
+  overview: string;
+  score: number;
+  year_diff: number;
+}
+
+export interface CandidatesResponse {
+  candidates: MatchCandidate[];
+}
+
+// One filesystem rename computed server-side: from -> to, both absolute
+// server paths (display only - the client never sends paths back).
+export interface RenameMove {
+  from: string;
+  to: string;
+  kind: "video" | "subtitle" | "nfo" | "other";
+}
+
+export interface RenamePlan {
+  dir_old: string;
+  dir_new: string;
+  moves: RenameMove[];
+}
+
+// Per-release rename preview attached to a successful manual match.
+export interface RenamePreview {
+  movie_file_id: number;
+  plan: RenamePlan;
+}
+
+export interface MatchResponse {
+  movie_id: number;
+  tmdb_id: number;
+  status: string;
+  merged_into?: number;
+  files_moved?: number;
+  rename_preview?: RenamePreview[];
+}
+
+export interface RenameResponse {
+  changed: boolean;
+  dry_run?: boolean;
+  plan: RenamePlan;
+  dir_old?: string;
+  dir_new?: string;
 }

@@ -16,6 +16,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/moviegeek/darknight/internal/matcher"
 	"github.com/moviegeek/darknight/internal/metadata"
 	"github.com/moviegeek/darknight/internal/model"
 	"github.com/moviegeek/darknight/internal/scanner"
@@ -27,6 +28,9 @@ type API struct {
 	Store    *store.Store
 	Scanner  *scanner.Scanner
 	Enricher *metadata.Enricher
+	// Matcher powers the manual-match endpoints (live candidate search and
+	// batch rematch). Nil when TMDB is not configured.
+	Matcher  *matcher.Matcher
 	Logger   *slog.Logger
 
 	mu       sync.Mutex
@@ -63,6 +67,13 @@ func (a *API) Router() http.Handler {
 	r.Get("/movies/{id}/cast", a.getMovieCast)
 	r.Get("/movies/{id}/files", a.listMovieFiles)
 	r.Get("/movies/{id}/files/{fid}", a.getMovieFile)
+
+	r.Get("/matches/pending", a.listPendingMatches)
+	r.Get("/movies/{id}/candidates", a.movieCandidates)
+	r.Post("/movies/{id}/match", a.matchMovie)
+	r.Post("/movies/{id}/unmatch", a.unmatchMovie)
+	r.Post("/movies/{id}/rename", a.renameMovieRelease)
+	r.Post("/matches/rematch", a.rematchAll)
 
 	r.Get("/countries", a.listCountries)
 	r.Get("/genres", a.listGenres)
@@ -250,6 +261,7 @@ func (a *API) scanLibrary(w http.ResponseWriter, r *http.Request) {
 type movieListItem struct {
 	model.Movie
 	HasFiles            bool   `json:"has_files"`
+	FileCount           int    `json:"file_count"` // how many movie_files map here (>1 = multi-version)
 	BestResolution      string `json:"best_resolution"`
 	BestSource          string `json:"best_source"`
 	BestHDR             string `json:"best_hdr"`
@@ -294,6 +306,8 @@ func parseMovieFilter(r *http.Request) store.MovieFilter {
 		SubtitleLang:     q.Get("subtitle_lang"),
 		ExternalSubtitle: queryBool(r, "external_subtitle"),
 		NoChiSubtitle:    queryBool(r, "no_chi_subtitle"),
+		MatchIssue:       q.Get("match_issue"),
+		MatchStatus:      q.Get("match_status"),
 	}
 	if c := q.Get("collection"); c != "" {
 		if id, err := strconv.ParseInt(c, 10, 64); err == nil {
@@ -336,7 +350,7 @@ func (a *API) listMovies(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			a.Logger.Warn("list files for movie", "id", m.ID, "err", err)
 		}
-		item := movieListItem{Movie: m, HasFiles: len(files) > 0}
+		item := movieListItem{Movie: m, HasFiles: len(files) > 0, FileCount: len(files)}
 		for _, f := range files {
 			if item.BestResolution == "" {
 				// first file is the best (ordered by resolution/size)
@@ -377,6 +391,12 @@ var (
 	facetHDRs        = []string{"HDR10", "HDR10+", "DV"}
 	facetSubLangs    = []string{"chi", "eng", "jpn", "kor"}
 	facetWatched     = []string{"unwatched", "watching", "watched"}
+	// facetMatchIssues are the data-health buckets; "unmatched" is the union
+	// of "no_files" and "no_tmdb" so its count is not their sum.
+	facetMatchIssues = []string{"unmatched", "no_files", "no_tmdb", "multi_version"}
+	// facetMatchStatuses are the state-machine values. Use a single-select chip
+	// group in the UI: pick one to filter to that bucket.
+	facetMatchStatuses = []string{"matched", "pending", "unmatched", "manual"}
 )
 
 // movieFacets reports, for the current filter selection, how many movies
@@ -465,6 +485,16 @@ func (a *API) movieFacets(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	matchIssue, err := countEach(facetMatchIssues, func(f *store.MovieFilter, v string) { f.MatchIssue = v })
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	matchStatus, err := countEach(facetMatchStatuses, func(f *store.MovieFilter, v string) { f.MatchStatus = v })
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"resolution":        resolution,
@@ -477,6 +507,8 @@ func (a *API) movieFacets(w http.ResponseWriter, r *http.Request) {
 		"external_subtitle": externalSubtitle,
 		"no_chi_subtitle":   noChiSubtitle,
 		"watched":           watched,
+		"match_issue":       matchIssue,
+		"match_status":      matchStatus,
 	})
 }
 
