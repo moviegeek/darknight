@@ -359,7 +359,7 @@ func (a *API) listMovies(w http.ResponseWriter, r *http.Request) {
 				item.BestHDR = f.HDR
 				item.DolbyVision = f.DolbyVision
 			}
-			if hasLang(f.SubtitleLanguages, "chi") {
+			if hasChineseLang(f.SubtitleLanguages) {
 				item.HasChiSubtitle = true
 			}
 			if f.HasExternalSubtitle {
@@ -510,6 +510,31 @@ func (a *API) movieFacets(w http.ResponseWriter, r *http.Request) {
 		"match_issue":       matchIssue,
 		"match_status":      matchStatus,
 	})
+}
+
+// isChineseLangTag reports whether a subtitle language tag belongs to the
+// Chinese family: ffprobe reports chi/zho/chs/cht, external subs are tagged
+// chi/zh, and Cantonese (yue) counts as Chinese for the UI.
+func isChineseLangTag(tag string) bool {
+	switch tag {
+	case "chi", "zh", "zho", "chs", "cht", "yue":
+		return true
+	}
+	return false
+}
+
+// hasChineseLang reports whether a comma-separated subtitle language field
+// contains any Chinese-family tag.
+func hasChineseLang(langs string) bool {
+	if langs == "" {
+		return false
+	}
+	for _, p := range strings.Split(langs, ",") {
+		if isChineseLangTag(strings.TrimSpace(p)) {
+			return true
+		}
+	}
+	return false
 }
 
 // hasLang reports whether a comma-separated subtitle language field contains lang.

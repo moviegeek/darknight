@@ -394,7 +394,11 @@ func (sc *Scanner) scanOneFile(
 	if existing != nil {
 		mf.ID = existing.ID
 		mf.MovieID = existing.MovieID
-		// carry over ffprobe-derived fields when skipping
+		// carry over derived fields when skipping. This includes the subtitle
+		// aggregate: the subtitles table is only rebuilt when the file changed,
+		// so forgetting to carry it over wipes subtitle_languages on every
+		// incremental scan and breaks the "no Chinese subtitle" filter (the
+		// detail rows survive, the aggregate silently empties).
 		if unchanged {
 			mf.DurationSec = existing.DurationSec
 			mf.VideoBitrate = existing.VideoBitrate
@@ -405,6 +409,8 @@ func (sc *Scanner) scanOneFile(
 			mf.FFProbeJSON = existing.FFProbeJSON
 			mf.FFProbeVersion = existing.FFProbeVersion
 			mf.FFProbeAt = existing.FFProbeAt
+			mf.SubtitleLanguages = existing.SubtitleLanguages
+			mf.HasExternalSubtitle = existing.HasExternalSubtitle
 		}
 	}
 
@@ -496,6 +502,12 @@ func (sc *Scanner) scanDisc(
 	if existing != nil {
 		mf.ID = existing.ID
 		mf.MovieID = existing.MovieID
+		if unchanged {
+			// subtitles are only rebuilt when the disc changed; keep the
+			// stored aggregate (same rationale as the file path above)
+			mf.SubtitleLanguages = existing.SubtitleLanguages
+			mf.HasExternalSubtitle = existing.HasExternalSubtitle
+		}
 	}
 
 	movieID, err := sc.upsertMovieFromRelease(ctx, mf, dirMeta, nfoPath, unchanged)

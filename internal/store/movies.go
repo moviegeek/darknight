@@ -486,15 +486,32 @@ LEFT JOIN (
 		where = append(where, "("+strings.Join(ors, " OR ")+")")
 	}
 	if f.SubtitleLang != "" {
-		addParam(`sub.langs LIKE '%' || ? || '%'`, f.SubtitleLang)
+		if f.SubtitleLang == "chi" {
+			// Chinese family tags (chi/zh/zho/chs/cht/yue) all satisfy the
+			// "中文" chip - see isChineseLangTag in the api package.
+			addClause(`(sub.langs LIKE '%chi%' OR sub.langs LIKE '%zho%'
+    OR sub.langs LIKE '%zh%' OR sub.langs LIKE '%chs%'
+    OR sub.langs LIKE '%cht%' OR sub.langs LIKE '%yue%')`)
+		} else {
+			addParam(`sub.langs LIKE '%' || ? || '%'`, f.SubtitleLang)
+		}
 	}
 	if f.ExternalSubtitle {
 		addClause(`sub.has_external = 1`)
 	}
 	if f.NoChiSubtitle {
+		// Chinese language family: ffprobe reports chi/zho/chs/cht, external
+		// subs are tagged chi/zh, and Cantonese (yue) counts for the UI too.
 		addClause(`NOT EXISTS (
   SELECT 1 FROM movie_files nc
-  WHERE nc.movie_id = m.id AND (',' || nc.subtitle_languages || ',') LIKE '%,chi,%'
+  WHERE nc.movie_id = m.id AND (
+    ',' || nc.subtitle_languages || ',' LIKE '%,chi,%'
+    OR ',' || nc.subtitle_languages || ',' LIKE '%,zh,%'
+    OR ',' || nc.subtitle_languages || ',' LIKE '%,zho,%'
+    OR ',' || nc.subtitle_languages || ',' LIKE '%,chs,%'
+    OR ',' || nc.subtitle_languages || ',' LIKE '%,cht,%'
+    OR ',' || nc.subtitle_languages || ',' LIKE '%,yue,%'
+  )
 )`)
 	}
 	switch f.Watched {
