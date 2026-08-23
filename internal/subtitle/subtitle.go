@@ -64,16 +64,16 @@ type Plan struct {
 // release directory (video, subs, nfo - anything). existing is used to
 // reserve the (lang, ext) namespace so colliding uploads version themselves.
 //
-// The order of plans for a single upload batch must be stable: process them
-// in the order given, each reserving its name for the next.
-func Name(videoFile, lang, uploadedName string, existing map[string]bool) Plan {
+// forceVersion skips the unversioned name entirely and starts at ver1 - used
+// for members of a same-(lang, ext) group inside one batch (see NameBatch).
+func Name(videoFile, lang, uploadedName string, existing map[string]bool, forceVersion bool) Plan {
 	ext := strings.ToLower(filepath.Ext(uploadedName))
 	stem := strings.TrimSuffix(videoFile, filepath.Ext(videoFile))
 
 	try := fmt.Sprintf("%s.%s%s", stem, lang, ext)
 	version := 0
-	for existing[try] {
-		version++
+	if forceVersion || existing[try] {
+		version = nextFreeVersion(stem, lang, ext, existing)
 		try = fmt.Sprintf("%s.ver%d.%s%s", stem, version, lang, ext)
 	}
 	existing[try] = true
@@ -86,18 +86,40 @@ func Name(videoFile, lang, uploadedName string, existing map[string]bool) Plan {
 	}
 }
 
+// nextFreeVersion returns the smallest N >= 1 whose verN name is not taken.
+func nextFreeVersion(stem, lang, ext string, existing map[string]bool) int {
+	for n := 1; ; n++ {
+		if !existing[fmt.Sprintf("%s.ver%d.%s%s", stem, n, lang, ext)] {
+			return n
+		}
+	}
+}
+
 // NameBatch allocates names for a whole upload batch. existing should contain
 // every filename currently in the release directory; the batch's own
-// allocations are added to it so two chi.srt uploads in one batch version
-// themselves.
+// allocations are added to it as they are made.
+//
+// When several files in the batch share a (lang, ext) pair, NONE of them takes
+// the unversioned name - they all get versions, starting at the first free
+// one. The unversioned slot is the canonical subtitle for that pair, and
+// picking which upload deserves it is a judgement the uploader did not make;
+// e.g. uploading two chi.srt files onto a clean release yields ver1 and ver2
+// (a lone chi.srt upload with no collision still lands unversioned).
 func NameBatch(videoFile string, uploads []Upload, existing map[string]bool) []Plan {
 	taken := make(map[string]bool, len(existing)+len(uploads))
 	for k := range existing {
 		taken[k] = true
 	}
+	groupSize := make(map[string]int, len(uploads))
+	for _, u := range uploads {
+		ext := strings.ToLower(filepath.Ext(u.Filename))
+		groupSize[u.Lang+ext]++
+	}
 	plans := make([]Plan, 0, len(uploads))
 	for _, u := range uploads {
-		plans = append(plans, Name(videoFile, u.Lang, u.Filename, taken))
+		ext := strings.ToLower(filepath.Ext(u.Filename))
+		forceVersion := groupSize[u.Lang+ext] > 1
+		plans = append(plans, Name(videoFile, u.Lang, u.Filename, taken, forceVersion))
 	}
 	return plans
 }

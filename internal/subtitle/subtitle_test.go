@@ -39,20 +39,38 @@ func TestNameBatch(t *testing.T) {
 		}
 	})
 
-	t.Run("two same lang+ext in one batch -> ver1, ver2", func(t *testing.T) {
+	t.Run("two same lang+ext in one batch -> ALL versioned ver1, ver2", func(t *testing.T) {
+		// the unversioned slot is reserved for a single unambiguous upload;
+		// a same-(lang,ext) group inside one batch cannot decide which file
+		// deserves it, so every member is versioned
 		existing := map[string]bool{video: true}
 		plans := NameBatch(video, []Upload{
 			{Filename: "a.srt", Lang: "chi"},
 			{Filename: "b.srt", Lang: "chi"},
 		}, existing)
 		got := SortedFilenames(plans)
-		want := []string{base + ".chi.srt", base + ".ver1.chi.srt"}
+		want := []string{base + ".ver1.chi.srt", base + ".ver2.chi.srt"}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("got %v want %v", got, want)
 		}
 	})
 
-	t.Run("existing ver1 then upload two more", func(t *testing.T) {
+	t.Run("user case: Bad Sleep Well, two chs srt uploads, clean release", func(t *testing.T) {
+		v := "The.Bad.Sleep.Well.1960.720p.BluRay.FLAC.x264-EA.mkv"
+		b := "The.Bad.Sleep.Well.1960.720p.BluRay.FLAC.x264-EA"
+		existing := map[string]bool{v: true, b + ".nfo": true}
+		plans := NameBatch(v, []Upload{
+			{Filename: "[zmk.pw]The.Bad.Sleep.Well.1960.1080p.BluRay.x264.chs.utf8.srt", Lang: "chi"},
+			{Filename: "[zmk.pw]The.Bad.Sleep.Well.1960.BluRay.720p.x264.AC3-MySiLU.utf8.srt", Lang: "chi"},
+		}, existing)
+		got := SortedFilenames(plans)
+		want := []string{b + ".ver1.chi.srt", b + ".ver2.chi.srt"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("got %v want %v", got, want)
+		}
+	})
+
+	t.Run("existing chi.srt + ver1, then upload two more -> ver2, ver3", func(t *testing.T) {
 		existing := map[string]bool{
 			video:              true,
 			base + ".chi.srt":   true,
@@ -66,6 +84,14 @@ func TestNameBatch(t *testing.T) {
 		want := []string{base + ".ver2.chi.srt", base + ".ver3.chi.srt"}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("got %v want %v", got, want)
+		}
+	})
+
+	t.Run("single upload onto clean release stays unversioned", func(t *testing.T) {
+		existing := map[string]bool{video: true}
+		plans := NameBatch(video, []Upload{{Filename: "one.srt", Lang: "chi"}}, existing)
+		if plans[0].FinalName != base+".chi.srt" || plans[0].Version != 0 {
+			t.Fatalf("got %+v", plans)
 		}
 	})
 
