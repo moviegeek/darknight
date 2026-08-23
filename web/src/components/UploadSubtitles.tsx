@@ -73,6 +73,10 @@ function UploadDialog({
   const inputRef = useRef<HTMLInputElement>(null);
   const [items, setItems] = useState<Array<{ file: File; lang: string }>>([]);
   const [error, setError] = useState("");
+  // dragDepth counts dragenter/dragleave pairs so the highlight stays while
+  // dragging over child elements of the drop zone.
+  const [dragDepth, setDragDepth] = useState(0);
+  const dragging = dragDepth > 0;
 
   const addFiles = (fl: FileList | null) => {
     if (!fl) return;
@@ -120,8 +124,28 @@ function UploadDialog({
       onClick={onClose}
     >
       <div
-        className="mt-12 w-full max-w-xl rounded-lg border border-border bg-bg-panel p-5 shadow-2xl"
+        className={
+          "mt-12 w-full max-w-xl rounded-lg border bg-bg-panel p-5 shadow-2xl " +
+          (dragging ? "border-accent" : "border-border")
+        }
         onClick={(e) => e.stopPropagation()}
+        onDragEnter={(e) => {
+          e.preventDefault();
+          if (e.dataTransfer.types.includes("Files")) setDragDepth((d) => d + 1);
+        }}
+        onDragOver={(e) => {
+          e.preventDefault();
+          if (e.dataTransfer.types.includes("Files")) e.dataTransfer.dropEffect = "copy";
+        }}
+        onDragLeave={(e) => {
+          e.preventDefault();
+          setDragDepth((d) => Math.max(0, d - 1));
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragDepth(0);
+          addFiles(e.dataTransfer.files);
+        }}
       >
         <div className="mb-1 flex items-center justify-between">
           <h3 className="text-base font-semibold text-ink">上传字幕</h3>
@@ -133,14 +157,23 @@ function UploadDialog({
           {file.library_name}/{file.dir_path}
         </p>
 
-        {/* drop zone / picker */}
-        <button
+        {/* drop zone / picker: click to browse; drops land on the whole dialog */}
+        <div
           onClick={() => inputRef.current?.click()}
-          className="flex w-full flex-col items-center gap-1.5 rounded-md border border-dashed border-border py-6 text-sm text-ink-muted transition hover:border-ink-dim hover:text-ink"
+          className={
+            "flex w-full cursor-pointer flex-col items-center gap-1.5 rounded-md border border-dashed py-6 text-sm transition " +
+            (dragging
+              ? "border-accent bg-accent/10 text-accent"
+              : "border-border text-ink-muted hover:border-ink-dim hover:text-ink")
+          }
         >
-          <Upload className="h-5 w-5" />
-          点击选择字幕文件（可多选，srt / ass / ssa）
-        </button>
+          <Upload className={dragging ? "h-6 w-6" : "h-5 w-5"} />
+          {dragging ? (
+            <span className="font-medium">松开以上传字幕文件</span>
+          ) : (
+            <span>拖放字幕文件到此处，或点击选择（可多选，srt / ass / ssa）</span>
+          )}
+        </div>
         <input
           ref={inputRef}
           type="file"
