@@ -4,17 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/moviegeek/darknight/internal/matcher"
 	"github.com/moviegeek/darknight/internal/model"
 	"github.com/moviegeek/darknight/internal/parser"
 	"github.com/moviegeek/darknight/internal/rename"
 	"github.com/moviegeek/darknight/internal/store"
+	subtitlepkg "github.com/moviegeek/darknight/internal/subtitle"
 )
 
 // ---------- manual matching endpoints ----------
@@ -247,9 +250,9 @@ func (a *API) renameMovieRelease(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	fid, err := strconv.ParseInt(r.URL.Query().Get("file_id"), 10, 64)
+	fid, err := strconv.ParseInt(chi.URLParam(r, "fid"), 10, 64)
 	if err != nil || fid <= 0 {
-		writeError(w, http.StatusBadRequest, "missing file_id")
+		writeError(w, http.StatusBadRequest, "missing file id")
 		return
 	}
 	dryRun := queryBool(r, "dry_run")
@@ -453,4 +456,155 @@ func bestScore(res *matcher.Result) float64 {
 // may already be the enriched original title, which searches fine as-is).
 func searchVariantsOf(m *model.Movie) []string {
 	return parser.SearchVariants(m.Title)
+}
+
+// ---------- subtitle upload ----------
+
+// uploadSubtitles receives a batch of subtitle files for one movie release.
+// Multipart: files[] (srt/ass/ssa only) plus langs[] - one ISO 639-2 code or
+// display name per file, in order. Files are written next to the video as
+// <movie stem>.[verN.]<lang>.<ext> and registered in the subtitles table.
+func (a *API) uploadSubtitles(w http.ResponseWriter, r *http.Request) {
+	movieID, err := parseInt64(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	fid, err := strconv.ParseInt(chi.URLParam(r, "fid"), 10, 64)
+	if err != nil || fid <= 0 {
+		writeError(w, http.StatusBadRequest, "missing file id")
+		return
+	}
+
+	// resolve the movie_file + library root
+	m, err := a.Store.GetMovie(r.Context(), movieID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "movie not found")
+		return
+	}
+	files, err := a.Store.ListMovieFiles(r.Context(), movieID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var mf *model.MovieFile
+	for i := range files {
+		if files[i].ID == fid {
+			mf = &files[i]
+			break
+		}
+	}
+	if mf == nil {
+		writeError(w, http.StatusNotFound, "file not on this movie")
+		return
+	}
+	if mf.IsDisc {
+		writeError(w, http.StatusBadRequest, "disc releases cannot take uploaded subtitles")
+		return
+	}
+	libs, err := a.Store.ListLibraries(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	root := ""
+	for _, l := range libs {
+		if l.ID == mf.LibraryID {
+			root = l.RootPath
+		}
+	}
+	if root == "" {
+		writeError(w, http.StatusInternalServerError, "library root not found")
+		return
+	}
+	dirAbs := filepath.Join(root, mf.DirPath)
+
+	if err := r.ParseMultipartForm(64 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "parse multipart: "+err.Error())
+		return
+	}
+	uploads := r.MultipartForm.File["files"]
+	if len(uploads) == 0 {
+		writeError(w, http.StatusBadRequest, "no files uploaded")
+		return
+	}
+	langs := r.MultipartForm.Value["langs"]
+
+	// validate extensions up front so nothing is written on a bad batch
+	allowed := map[string]bool{".srt": true, ".ass": true, ".ssa": true}
+	uploadList := make([]subtitlepkg.Upload, 0, len(uploads))
+	for i, fh := range uploads {
+		ext := strings.ToLower(filepath.Ext(fh.Filename))
+		if !allowed[ext] {
+			writeError(w, http.StatusBadRequest, "unsupported subtitle format: "+fh.Filename)
+			return
+		}
+		lang := "chi"
+		if i < len(langs) && langs[i] != "" {
+			lang = subtitlepkg.LangCode(langs[i])
+		}
+		uploadList = append(uploadList, subtitlepkg.Upload{Filename: fh.Filename, Lang: lang})
+	}
+
+	// existing filenames in the release dir (for version allocation)
+	existing := map[string]bool{}
+	entries, err := os.ReadDir(dirAbs)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "release dir not readable: "+err.Error())
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			existing[e.Name()] = true
+		}
+	}
+
+	plans := subtitlepkg.NameBatch(mf.FileName, uploadList, existing)
+	type resultRow struct {
+		OriginalName string `json:"original_name"`
+		FinalName    string `json:"final_name"`
+		Lang         string `json:"lang"`
+		Size         int64  `json:"size"`
+	}
+	results := make([]resultRow, 0, len(plans))
+	for i, plan := range plans {
+		src, err := uploads[i].Open()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "open upload: "+err.Error())
+			return
+		}
+		dst, err := os.OpenFile(filepath.Join(dirAbs, plan.FinalName), os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o644)
+		if err != nil {
+			src.Close()
+			writeError(w, http.StatusInternalServerError, "write subtitle: "+err.Error())
+			return
+		}
+		size, copyErr := io.Copy(dst, src)
+		src.Close()
+		dst.Close()
+		if copyErr != nil {
+			_ = os.Remove(filepath.Join(dirAbs, plan.FinalName))
+			writeError(w, http.StatusInternalServerError, "save subtitle: "+copyErr.Error())
+			return
+		}
+		sub := model.Subtitle{
+			FilePath:   filepath.Join(dirAbs, plan.FinalName),
+			Language:   plan.Lang,
+			Format:     strings.TrimPrefix(plan.Ext, "."),
+			IsEmbedded: false,
+			FileSize:   size,
+		}
+		if err := a.Store.AddSubtitle(r.Context(), mf.ID, sub); err != nil {
+			writeError(w, http.StatusInternalServerError, "register subtitle: "+err.Error())
+			return
+		}
+		results = append(results, resultRow{
+			OriginalName: plan.OriginalName,
+			FinalName:    plan.FinalName,
+			Lang:         plan.Lang,
+			Size:         size,
+		})
+	}
+	a.Logger.Info("subtitles uploaded", "movie_id", m.ID, "movie_file", mf.ID, "count", len(results))
+	writeJSON(w, http.StatusOK, map[string]interface{}{"uploaded": results})
 }

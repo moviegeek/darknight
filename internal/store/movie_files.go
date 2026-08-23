@@ -291,3 +291,45 @@ func (s *Store) RemoveStaleMovieFiles(ctx context.Context, libraryID int64, keep
 	}
 	return res.RowsAffected()
 }
+
+// AddSubtitle inserts one external subtitle row and refreshes the movie_file's
+// subtitle_languages aggregate. Called by the upload endpoint after the file
+// is on disk; the aggregate must follow, or the "no Chinese subtitle" filter
+// and the 中字 badge read stale data (see the carry-over regression test).
+func (s *Store) AddSubtitle(ctx context.Context, movieFileID int64, sub model.Subtitle) error {
+	isDef := 0
+	if sub.IsDefault {
+		isDef = 1
+	}
+	res, err := s.DB.ExecContext(ctx, `
+INSERT INTO subtitles(movie_file_id, file_path, language, format, is_embedded, is_default, "order", file_size)
+VALUES (?, ?, ?, ?, 0, ?, COALESCE((SELECT MAX("order")+1 FROM subtitles WHERE movie_file_id = ?), 0), ?)`,
+		movieFileID, sub.FilePath, sub.Language, sub.Format, isDef, movieFileID, sub.FileSize)
+	if err != nil {
+		return err
+	}
+	id, _ := res.LastInsertId()
+	sub.ID = id
+	return s.refreshSubtitleAggregate(ctx, movieFileID)
+}
+
+// refreshSubtitleAggregate recomputes subtitle_languages / has_external_subtitle
+// for one movie_file from its detail rows, preserving first-seen order.
+func (s *Store) refreshSubtitleAggregate(ctx context.Context, movieFileID int64) error {
+	_, err := s.DB.ExecContext(ctx, `
+UPDATE movie_files SET
+  subtitle_languages = COALESCE((
+    SELECT GROUP_CONCAT(lang, ',') FROM (
+      SELECT DISTINCT s.language AS lang, MIN(s."order") AS first_order
+      FROM subtitles s
+      WHERE s.movie_file_id = ? AND s.language != ''
+      GROUP BY s.language ORDER BY first_order
+    )), ''),
+  has_external_subtitle = EXISTS(
+    SELECT 1 FROM subtitles s
+    WHERE s.movie_file_id = ? AND s.is_embedded = 0),
+  updated_at = ?
+WHERE id = ?`,
+		movieFileID, movieFileID, time.Now().Unix(), movieFileID)
+	return err
+}

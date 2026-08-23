@@ -11,6 +11,7 @@ import {
 } from "../api/client";
 import type { AudioTrack, CastResponse, MovieFile, MovieFileDetail, Subtitle } from "../api/types";
 import { ManualMatchButton } from "../components/ManualMatch";
+import { UploadSubtitlesButton } from "../components/UploadSubtitles";
 import {
   cn,
   audioChannelCountLabel,
@@ -278,6 +279,9 @@ function FilePaths({ file, detail }: { file: MovieFile; detail?: MovieFileDetail
         <FileVideo className="mt-0.5 h-3 w-3 shrink-0" />
         <span className="break-all" title={videoPath}>
           {videoPath}
+        </span>
+        <span className="ml-2 shrink-0">
+          <UploadSubtitlesButton movieId={file.movie_id} file={file} compact />
         </span>
       </div>
       {extSubs.map((s) => {

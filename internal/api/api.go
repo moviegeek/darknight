@@ -73,6 +73,7 @@ func (a *API) Router() http.Handler {
 	r.Post("/movies/{id}/match", a.matchMovie)
 	r.Post("/movies/{id}/unmatch", a.unmatchMovie)
 	r.Post("/movies/{id}/rename", a.renameMovieRelease)
+	r.Post("/movies/{id}/files/{fid}/subtitles", a.uploadSubtitles)
 	r.Post("/matches/rematch", a.rematchAll)
 
 	r.Get("/countries", a.listCountries)

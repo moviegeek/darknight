@@ -321,3 +321,20 @@ export interface RenameResponse {
   dir_old?: string;
   dir_new?: string;
 }
+
+// ----- subtitle upload -----
+
+// One uploaded subtitle as confirmed by the user: the file (already staged by
+// the browser) and the language they picked for it.
+export interface SubtitleUploadItem {
+  filename: string;
+  lang: string; // display name; the backend resolves ISO 639-2
+  size: number;
+}
+
+export interface SubtitleUploadResult {
+  original_name: string;
+  final_name: string;
+  lang: string;
+  size: number;
+}

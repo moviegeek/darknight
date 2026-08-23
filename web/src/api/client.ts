@@ -14,6 +14,7 @@ import type {
   MovieFileDetail,
   MatchResponse,
   MovieListResponse,
+  SubtitleUploadResult,
   MovieQuery,
   RenameResponse,
   SqlResult,
@@ -134,3 +135,24 @@ export const renameMovieFile = (movieId: number, fileId: number, dryRun: boolean
     })}`,
     { method: "POST" }
   );
+
+// Upload subtitle files for one release. langs must be parallel to files.
+export const uploadSubtitles = async (
+  movieId: number,
+  fileId: number,
+  files: File[],
+  langs: string[]
+): Promise<{ uploaded: SubtitleUploadResult[] }> => {
+  const form = new FormData();
+  files.forEach((f) => form.append("files", f));
+  langs.forEach((l) => form.append("langs", l));
+  const res = await fetch(
+    `/api/movies/${movieId}/files/${fileId}/subtitles`,
+    { method: "POST", body: form }
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`${res.status} ${res.statusText} ${text}`);
+  }
+  return res.json();
+};
