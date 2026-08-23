@@ -2,19 +2,25 @@
 // convention:
 //
 //	<movie stem>.<lang>.<ext>          e.g. Z.1969....-HANDJOB.chi.ass
-//	<movie stem>.verN.<lang>.<ext>     when (lang, ext) is already taken
+//	<movie stem>.verN.<lang>.<ext>     when the pair already has files
 //
 // The movie stem is the video file's name without its extension; lang is an
-// ISO 639-2 code chosen by the user. Version suffixes start at ver1 and are
-// allocated per (lang, ext) pair - a chi.srt colliding with an existing
-// chi.srt becomes ver1, a second one ver2, while a chi.ass never versions
-// against a chi.srt.
+// ISO 639-2 code chosen by the user.
+//
+// The unversioned name is the canonical slot for one (lang, ext) pair and is
+// only ever held by exactly one file. When an upload would put a second file
+// into an occupied namespace, EVERY file in it is versioned: an existing
+// unversioned subtitle vacates to the next free version (ver1 when the
+// namespace had none) and the uploads take the higher numbers that follow.
+// Version numbers are per (lang, ext) - a chi.ass never versions against a
+// chi.srt.
 package subtitle
 
 import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -50,6 +56,12 @@ func LangCode(display string) string {
 	return "und"
 }
 
+// Upload is one file in an upload batch, already validated.
+type Upload struct {
+	Filename string // the uploaded file's original name
+	Lang     string // ISO 639-2 code chosen by the user
+}
+
 // Plan is the naming decision for one uploaded subtitle.
 type Plan struct {
 	OriginalName string // the file as uploaded
@@ -59,75 +71,127 @@ type Plan struct {
 	Version      int    // 0 = unversioned, N for verN
 }
 
-// Name allocates the on-disk filename for one uploaded subtitle given the
-// movie's video file name and the set of filenames already present in the
-// release directory (video, subs, nfo - anything). existing is used to
-// reserve the (lang, ext) namespace so colliding uploads version themselves.
-//
-// forceVersion skips the unversioned name entirely and starts at ver1 - used
-// for members of a same-(lang, ext) group inside one batch (see NameBatch).
-func Name(videoFile, lang, uploadedName string, existing map[string]bool, forceVersion bool) Plan {
-	ext := strings.ToLower(filepath.Ext(uploadedName))
-	stem := strings.TrimSuffix(videoFile, filepath.Ext(videoFile))
-
-	try := fmt.Sprintf("%s.%s%s", stem, lang, ext)
-	version := 0
-	if forceVersion || existing[try] {
-		version = nextFreeVersion(stem, lang, ext, existing)
-		try = fmt.Sprintf("%s.ver%d.%s%s", stem, version, lang, ext)
-	}
-	existing[try] = true
-	return Plan{
-		OriginalName: uploadedName,
-		FinalName:    try,
-		Ext:          ext,
-		Lang:         lang,
-		Version:      version,
-	}
+// Rename is an on-disk rename of an EXISTING subtitle that must vacate the
+// unversioned slot so the namespace stays unambiguous.
+type Rename struct {
+	From string // old filename (basename)
+	To   string // new filename (basename)
 }
 
-// nextFreeVersion returns the smallest N >= 1 whose verN name is not taken.
-func nextFreeVersion(stem, lang, ext string, existing map[string]bool) int {
-	for n := 1; ; n++ {
-		if !existing[fmt.Sprintf("%s.ver%d.%s%s", stem, n, lang, ext)] {
-			return n
+// Allocation is the complete naming decision for one upload batch: the
+// uploads' plans plus any pre-existing file that has to move first.
+type Allocation struct {
+	Plans   []Plan
+	Renames []Rename
+}
+
+// Allocate decides the naming for an upload batch against the current
+// contents of the release directory (dirFiles = basenames of every regular
+// file in it). Groups are per (lang, ext) pair and independent of each other.
+//
+// Per group:
+//
+//   - empty namespace, one upload      -> upload takes the unversioned name
+//   - empty namespace, N uploads       -> ver1 .. verN
+//   - existing unversioned file        -> it vacates to the next free
+//     version (ver1 on a fresh namespace), uploads take the numbers after it
+//   - existing versioned files only    -> uploads continue after the highest
+func Allocate(videoFile string, uploads []Upload, dirFiles []string) Allocation {
+	stem := strings.TrimSuffix(videoFile, filepath.Ext(videoFile))
+	existing := make(map[string]bool, len(dirFiles))
+	for _, f := range dirFiles {
+		existing[f] = true
+	}
+
+	// group uploads by (lang, ext), preserving batch order within a group
+	type groupKey struct{ lang, ext string }
+	groups := make(map[groupKey][]Upload)
+	var order []groupKey
+	for _, u := range uploads {
+		ext := strings.ToLower(filepath.Ext(u.Filename))
+		k := groupKey{u.Lang, ext}
+		if _, seen := groups[k]; !seen {
+			order = append(order, k)
+		}
+		groups[k] = append(groups[k], u)
+	}
+
+	var alloc Allocation
+	for _, k := range order {
+		maxVer := 0
+		unversioned := ""
+		for _, f := range dirFiles {
+			if v, ok := parseNamespaceFile(f, stem, k.lang, k.ext); ok {
+				if v == 0 {
+					unversioned = f
+				} else if v > maxVer {
+					maxVer = v
+				}
+			}
+		}
+		next := maxVer + 1
+
+		// an existing unversioned file vacates the canonical slot first
+		if unversioned != "" {
+			to := fmt.Sprintf("%s.ver%d.%s%s", stem, next, k.lang, k.ext)
+			for existing[to] {
+				next++
+				to = fmt.Sprintf("%s.ver%d.%s%s", stem, next, k.lang, k.ext)
+			}
+			alloc.Renames = append(alloc.Renames, Rename{From: unversioned, To: to})
+			existing[to] = true
+			next++
+		}
+
+		for _, u := range groups[k] {
+			// the unversioned name is only for a sole, unambiguous file: a
+			// group of several uploads, or any file already in the namespace,
+			// means everything gets versioned
+			sole := len(groups[k]) == 1 && unversioned == "" && maxVer == 0 && next == 1
+			if sole {
+				name := fmt.Sprintf("%s.%s%s", stem, k.lang, k.ext)
+				if !existing[name] {
+					existing[name] = true
+					alloc.Plans = append(alloc.Plans, Plan{
+						OriginalName: u.Filename, FinalName: name,
+						Ext: k.ext, Lang: k.lang, Version: 0,
+					})
+					continue
+				}
+			}
+			name := fmt.Sprintf("%s.ver%d.%s%s", stem, next, k.lang, k.ext)
+			for existing[name] {
+				next++
+				name = fmt.Sprintf("%s.ver%d.%s%s", stem, next, k.lang, k.ext)
+			}
+			existing[name] = true
+			alloc.Plans = append(alloc.Plans, Plan{
+				OriginalName: u.Filename, FinalName: name,
+				Ext: k.ext, Lang: k.lang, Version: next,
+			})
+			next++
 		}
 	}
+	return alloc
 }
 
-// NameBatch allocates names for a whole upload batch. existing should contain
-// every filename currently in the release directory; the batch's own
-// allocations are added to it as they are made.
-//
-// When several files in the batch share a (lang, ext) pair, NONE of them takes
-// the unversioned name - they all get versions, starting at the first free
-// one. The unversioned slot is the canonical subtitle for that pair, and
-// picking which upload deserves it is a judgement the uploader did not make;
-// e.g. uploading two chi.srt files onto a clean release yields ver1 and ver2
-// (a lone chi.srt upload with no collision still lands unversioned).
-func NameBatch(videoFile string, uploads []Upload, existing map[string]bool) []Plan {
-	taken := make(map[string]bool, len(existing)+len(uploads))
-	for k := range existing {
-		taken[k] = true
+// parseNamespaceFile reports whether filename belongs to the
+// stem[.verN].lang.ext namespace and returns its version (0 = unversioned).
+func parseNamespaceFile(filename, stem, lang, ext string) (int, bool) {
+	suffix := "." + lang + ext
+	if !strings.HasSuffix(filename, suffix) {
+		return 0, false
 	}
-	groupSize := make(map[string]int, len(uploads))
-	for _, u := range uploads {
-		ext := strings.ToLower(filepath.Ext(u.Filename))
-		groupSize[u.Lang+ext]++
+	head := strings.TrimSuffix(filename, suffix)
+	if head == stem {
+		return 0, true
 	}
-	plans := make([]Plan, 0, len(uploads))
-	for _, u := range uploads {
-		ext := strings.ToLower(filepath.Ext(u.Filename))
-		forceVersion := groupSize[u.Lang+ext] > 1
-		plans = append(plans, Name(videoFile, u.Lang, u.Filename, taken, forceVersion))
+	if strings.HasPrefix(head, stem+".ver") {
+		if n, err := strconv.Atoi(strings.TrimPrefix(head, stem+".ver")); err == nil && n >= 1 {
+			return n, true
+		}
 	}
-	return plans
-}
-
-// Upload is one file in an upload batch, already validated.
-type Upload struct {
-	Filename string // the uploaded file's original name
-	Lang     string // ISO 639-2 code chosen by the user
+	return 0, false
 }
 
 // SortedFilenames returns the plans' final names sorted, for tests and

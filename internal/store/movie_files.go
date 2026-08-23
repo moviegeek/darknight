@@ -333,3 +333,13 @@ WHERE id = ?`,
 		movieFileID, movieFileID, time.Now().Unix(), movieFileID)
 	return err
 }
+
+// UpdateSubtitlePath repoints a subtitle row from one absolute path to another
+// after an on-disk rename. No-op when no row matches (e.g. a sidecar file the
+// scanner never registered).
+func (s *Store) UpdateSubtitlePath(ctx context.Context, movieFileID int64, oldPath, newPath string) error {
+	_, err := s.DB.ExecContext(ctx,
+		`UPDATE subtitles SET file_path = ? WHERE movie_file_id = ? AND file_path = ?`,
+		newPath, movieFileID, oldPath)
+	return err
+}

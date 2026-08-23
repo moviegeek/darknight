@@ -547,7 +547,7 @@ func (a *API) uploadSubtitles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// existing filenames in the release dir (for version allocation)
-	existing := map[string]bool{}
+	existingFilenames := []string{}
 	entries, err := os.ReadDir(dirAbs)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "release dir not readable: "+err.Error())
@@ -555,11 +555,29 @@ func (a *API) uploadSubtitles(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, e := range entries {
 		if !e.IsDir() {
-			existing[e.Name()] = true
+			existingFilenames = append(existingFilenames, e.Name())
 		}
 	}
 
-	plans := subtitlepkg.NameBatch(mf.FileName, uploadList, existing)
+	alloc := subtitlepkg.Allocate(mf.FileName, uploadList, existingFilenames)
+
+	// pre-existing subtitles that must vacate the unversioned slot go first,
+	// on disk and in the subtitles table (the aggregate is unchanged - same
+	// language, same format, only the path moves)
+	for _, rn := range alloc.Renames {
+		if err := os.Rename(filepath.Join(dirAbs, rn.From), filepath.Join(dirAbs, rn.To)); err != nil {
+			writeError(w, http.StatusInternalServerError, "make room for upload ("+rn.From+"): "+err.Error())
+			return
+		}
+		if err := a.Store.UpdateSubtitlePath(r.Context(), mf.ID,
+			filepath.Join(dirAbs, rn.From), filepath.Join(dirAbs, rn.To)); err != nil {
+			a.Logger.Warn("repoint renamed subtitle", "from", rn.From, "err", err)
+		}
+		a.Logger.Info("existing subtitle vacated unversioned slot",
+			"movie_file", mf.ID, "from", rn.From, "to", rn.To)
+	}
+
+	plans := alloc.Plans
 	type resultRow struct {
 		OriginalName string `json:"original_name"`
 		FinalName    string `json:"final_name"`
@@ -605,6 +623,17 @@ func (a *API) uploadSubtitles(w http.ResponseWriter, r *http.Request) {
 			Size:         size,
 		})
 	}
-	a.Logger.Info("subtitles uploaded", "movie_id", m.ID, "movie_file", mf.ID, "count", len(results))
-	writeJSON(w, http.StatusOK, map[string]interface{}{"uploaded": results})
+	type renameRow struct {
+		From string `json:"from"`
+		To   string `json:"to"`
+	}
+	renamed := make([]renameRow, 0, len(alloc.Renames))
+	for _, rn := range alloc.Renames {
+		renamed = append(renamed, renameRow{From: rn.From, To: rn.To})
+	}
+	a.Logger.Info("subtitles uploaded", "movie_id", m.ID, "movie_file", mf.ID,
+		"count", len(results), "existing_renamed", len(renamed))
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"uploaded": results, "renamed_existing": renamed,
+	})
 }
