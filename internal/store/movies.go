@@ -332,7 +332,8 @@ type MovieFilter struct {
 	//   "no_files"      - a movie row with zero movie_files (orphan entry)
 	//   "no_tmdb"       - has files but no tmdb_id (hence no poster/metadata)
 	//   "multi_version" - more than one movie_file maps to this movie
-	// Empty means no filter.
+	// Empty means no filter - which also hides file-less movies entirely (see
+	// buildMoviesQuery); set one of the buckets above to inspect them.
 	MatchIssue string
 	// MatchStatus filters on the match state machine. The two dimensions
 	// (MatchIssue + MatchStatus) are independent and AND together when both
@@ -526,6 +527,16 @@ LEFT JOIN (
 	// Data-health filters. These describe the state of the local index rather
 	// than the film, so they are all EXISTS/COUNT predicates on movie_files
 	// plus the tmdb_id column - never a JOIN, which would change row counts.
+	//
+	// By default (no MatchIssue selected) movie rows with zero movie_files are
+	// hidden: the scanner drops movie_files when a release disappears from
+	// disk but keeps the movies row as a metadata cache, so a file-less row is
+	// an orphaned index entry, not library content. The no_files / unmatched
+	// buckets below exist precisely to surface those rows, so they bypass the
+	// default; no_tmdb and multi_version already imply files exist.
+	if f.MatchIssue == "" {
+		addClause(`EXISTS (SELECT 1 FROM movie_files mf2 WHERE mf2.movie_id = m.id)`)
+	}
 	switch f.MatchIssue {
 	case "no_files":
 		addClause(`NOT EXISTS (SELECT 1 FROM movie_files mf2 WHERE mf2.movie_id = m.id)`)
@@ -665,6 +676,48 @@ func (s *Store) GetMovie(ctx context.Context, id int64) (*model.Movie, error) {
 		return nil, err
 	}
 	return m, nil
+}
+
+// DeleteMovie removes a movie row plus its dependent index rows, in one
+// transaction:
+//
+//   - movie_genres / movie_credits / watch_status / user_collection_items
+//     rows go with the movie (the schema declares these ON DELETE CASCADE,
+//     but buildDSN's _pragma settings never actually applied - only the last
+//     url.Values.Set survives - so SQLite enforces nothing; the cleanup is
+//     explicit)
+//   - movie_files rows are DETACHED (movie_id -> NULL), not deleted: they
+//     return to the unmatched pool and re-seed on the next scan
+//
+// Nothing on disk is touched. Returns ErrNotFound when no row carries the id.
+func (s *Store) DeleteMovie(ctx context.Context, id int64) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	for _, table := range []string{
+		"movie_genres", "movie_credits", "watch_status", "user_collection_items",
+	} {
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM `+table+` WHERE movie_id = ?`, id); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE movie_files SET movie_id = NULL, updated_at = ? WHERE movie_id = ?`,
+		time.Now().Unix(), id); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM movies WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return ErrNotFound
+	}
+	return tx.Commit()
 }
 
 // scanner is the minimal interface both *sql.Row and *sql.Rows satisfy for

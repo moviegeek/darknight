@@ -32,6 +32,12 @@ export interface Movie {
   original_title: string;
   title_en: string;
   title_zh: string;
+  // Match state machine + audit fields, emitted by the backend on every movie
+  // response. The console's data-health panel relies on them.
+  match_status: string; // matched | pending | unmatched | manual
+  fail_reason: string;
+  created_at: number;
+  updated_at: number;
 }
 
 // Genre attached to the movie detail response.

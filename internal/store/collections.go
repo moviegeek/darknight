@@ -41,8 +41,11 @@ func collectionColumnsPrefixed(alias string) string {
 // genuine multi-film collections (a single-member "合集" is rarely useful); pass
 // 1 to include every collection that has at least one film on disk. Collections
 // with no local movies are always hidden (leftover rows from a TMDB record
-// whose films were never scanned). Order is by movie count desc, then name asc,
-// so the biggest collections surface first.
+// whose films were never scanned). Only movies with at least one movie_file
+// count as "local" - file-less movie rows are orphaned index entries the
+// library list hides, so counting them here would disagree with the grid.
+// Order is by movie count desc, then name asc, so the biggest collections
+// surface first.
 func (s *Store) ListCollectionsWithCount(ctx context.Context, minMovies int) ([]CollectionWithCount, error) {
 	if minMovies < 1 {
 		minMovies = 1
@@ -52,6 +55,7 @@ SELECT `+collectionColumnsPrefixed("c.")+`, COUNT(m.id) AS movie_count,
        COALESCE(cp.total, 0) AS total_parts
 FROM collections c
 JOIN movies m ON m.collection_id = c.id
+  AND EXISTS (SELECT 1 FROM movie_files mf WHERE mf.movie_id = m.id)
 LEFT JOIN (
   SELECT collection_id, COUNT(*) AS total FROM collection_parts GROUP BY collection_id
 ) cp ON cp.collection_id = c.id
@@ -169,8 +173,11 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 // ListCollectionParts returns the cached member movies of a collection in
 // release order, with LocalMovieID filled from a LEFT JOIN on movies.tmdb_id
 // so the caller can tell which films are already in the library (LocalMovieID
-// != 0) and which are missing (LocalMovieID == 0). Returns an empty slice
-// (not nil) when the collection has never been refreshed against TMDB.
+// != 0) and which are missing (LocalMovieID == 0). The join requires the local
+// row to have at least one movie_file: a file-less movie row is an orphaned
+// index entry, not a film on disk, so its part must render as missing.
+// Returns an empty slice (not nil) when the collection has never been
+// refreshed against TMDB.
 func (s *Store) ListCollectionParts(ctx context.Context, collectionID int64) ([]model.CollectionPart, error) {
 	rows, err := s.DB.QueryContext(ctx, `
 SELECT cp.id, cp.collection_id, cp.tmdb_id, cp.title, cp.original_title,
@@ -178,6 +185,7 @@ SELECT cp.id, cp.collection_id, cp.tmdb_id, cp.title, cp.original_title,
        COALESCE(m.id, 0) AS local_movie_id
 FROM collection_parts cp
 LEFT JOIN movies m ON m.tmdb_id = cp.tmdb_id
+  AND EXISTS (SELECT 1 FROM movie_files mf WHERE mf.movie_id = m.id)
 WHERE cp.collection_id = ?
 ORDER BY cp."order" ASC`, collectionID)
 	if err != nil {

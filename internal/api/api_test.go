@@ -166,6 +166,112 @@ func TestListMoviesFilters(t *testing.T) {
 	check("", 2)
 }
 
+// TestListMovies_HidesFilelessMovies verifies the frontend-facing behaviour:
+// orphaned movie rows (no movie_files) are excluded from /api/movies by
+// default, while ?match_issue=no_files still returns them (with has_files
+// false) for the console's debug view.
+func TestListMovies_HidesFilelessMovies(t *testing.T) {
+	st, srv := newApp(t)
+	ctx := context.Background()
+
+	m1 := mustMovie(t, st, ctx, "Casino", 1995, "tt0112641", 524)
+	mustFile(t, st, ctx, m1, "Casino.1995.BluRay.1080p.x264-CMCT", "1080p", "BluRay", "x264", "", false)
+	mustMovie(t, st, ctx, "Orphan", 2001, "tt0000001", 42) // no files on disk
+
+	get := func(query string) (items []map[string]interface{}, total int) {
+		t.Helper()
+		res, err := http.Get(srv.URL + "/api/movies" + query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var page struct {
+			Items []map[string]interface{} `json:"items"`
+			Total int                      `json:"total"`
+		}
+		_ = json.NewDecoder(res.Body).Decode(&page)
+		return page.Items, page.Total
+	}
+
+	if items, total := get(""); total != 1 || len(items) != 1 || items[0]["title"] != "Casino" {
+		t.Fatalf("default list: total=%d items=%v, want only Casino", total, items)
+	}
+	items, total := get("?match_issue=no_files&limit=0")
+	if total != 1 || len(items) != 1 || items[0]["title"] != "Orphan" || items[0]["has_files"] != false {
+		t.Fatalf("no_files list: total=%d items=%v, want Orphan with has_files=false", total, items)
+	}
+
+	// facets keep counting the data-health buckets over the hidden rows, so
+	// the console panel and the filter chips still see them. no_files has no
+	// chip of its own; it folds into "unmatched".
+	res, err := http.Get(srv.URL + "/api/movies/facets")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var facets struct {
+		MatchIssue map[string]int `json:"match_issue"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&facets)
+	if facets.MatchIssue["unmatched"] != 1 {
+		t.Fatalf("facet unmatched = %d, want 1 (the hidden orphan)", facets.MatchIssue["unmatched"])
+	}
+	if _, ok := facets.MatchIssue["no_files"]; ok {
+		t.Fatalf("facet no_files = %d, want key absent (no chip anymore)", facets.MatchIssue["no_files"])
+	}
+}
+
+// TestDeleteMovie covers the console's orphan-cleanup endpoint: deleting a
+// movie row returns 204 and removes it from the list; deleting a movie that
+// still has files detaches them (movie_id -> NULL) instead of dropping the
+// file index rows; a missing id returns 404.
+func TestDeleteMovie(t *testing.T) {
+	st, srv := newApp(t)
+	ctx := context.Background()
+
+	orphan := mustMovie(t, st, ctx, "Orphan", 2001, "tt0000001", 42) // no files
+	withFiles := mustMovie(t, st, ctx, "Casino", 1995, "tt0112641", 524)
+	mustFile(t, st, ctx, withFiles, "Casino.1995.BluRay.1080p.x264-CMCT", "1080p", "BluRay", "x264", "", false)
+
+	del := func(id int64) *http.Response {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/movies/"+strconv.FormatInt(id, 10), nil)
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		return res
+	}
+
+	if res := del(orphan); res.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete orphan status = %d, want 204", res.StatusCode)
+	}
+	res, _ := http.Get(srv.URL + "/api/movies?match_issue=no_files")
+	var page struct {
+		Total int `json:"total"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&page)
+	if page.Total != 0 {
+		t.Fatalf("no_files total after delete = %d, want 0", page.Total)
+	}
+
+	// delete a movie with files: the file row survives, detached
+	if res := del(withFiles); res.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete movie-with-files status = %d, want 204", res.StatusCode)
+	}
+	var fileCount, attached int
+	if err := st.DB.QueryRowContext(ctx,
+		`SELECT COUNT(*), COUNT(movie_id) FROM movie_files`).Scan(&fileCount, &attached); err != nil {
+		t.Fatalf("count movie_files: %v", err)
+	}
+	if fileCount != 1 || attached != 0 {
+		t.Fatalf("movie_files after delete: total=%d attached=%d, want 1 surviving row detached", fileCount, attached)
+	}
+
+	if res := del(withFiles); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("re-delete status = %d, want 404", res.StatusCode)
+	}
+}
+
 // TestListMovies_CountryFilterAndFields verifies the country filter (ISO code)
 // narrows the list and that the bilingual title fields surface in the response.
 func TestListMovies_CountryFilterAndFields(t *testing.T) {
@@ -184,6 +290,9 @@ func TestListMovies_CountryFilterAndFields(t *testing.T) {
 		if err := st.UpsertMovie(ctx, m); err != nil {
 			t.Fatalf("upsert: %v", err)
 		}
+		// the default list hides file-less movies, and this test exercises the
+		// country filter, not the data-health buckets.
+		mustFile(t, st, ctx, m.ID, m.Title+".1080p.BluRay.x264-TEST", "1080p", "BluRay", "x264", "", false)
 	}
 
 	get := func(query string) (int, map[string]interface{}) {

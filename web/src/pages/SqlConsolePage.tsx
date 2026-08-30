@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -8,10 +8,11 @@ import {
   Eraser,
   History,
   Play,
-  X,
 } from "lucide-react";
 import { execSQL, listTables } from "../api/client";
 import type { SqlResult } from "../api/types";
+import { ConfirmDialog } from "../components/ConfirmDialog";
+import { NoFileMoviesPanel } from "../components/NoFileMoviesPanel";
 import { useSqlHistory } from "../lib/useSqlHistory";
 import { cn } from "../lib/format";
 
@@ -80,6 +81,9 @@ export default function SqlConsolePage() {
           </span>
         </div>
       )}
+
+      {/* data-health: orphaned movie rows hidden from the library */}
+      <NoFileMoviesPanel onLoadSql={setSql} />
 
       <div className="flex gap-5">
         {/* left: tables panel */}
@@ -308,67 +312,6 @@ function DurationFooter({ ms, rowCount }: { ms: number; rowCount: number }) {
     <div className="flex items-center gap-1.5 px-1 text-xs text-ink-dim">
       <Clock className="h-3 w-3" />
       {rowCount} 行 · {ms} ms
-    </div>
-  );
-}
-
-// ConfirmDialog is a modal with a backdrop, used for the write-mode switch.
-// Closes on backdrop click or Escape.
-function ConfirmDialog({
-  title,
-  message,
-  confirmLabel,
-  cancelLabel,
-  onConfirm,
-  onCancel,
-}: {
-  title: string;
-  message: string;
-  confirmLabel: string;
-  cancelLabel: string;
-  onConfirm: () => void;
-  onCancel: () => void;
-}) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCancel();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onCancel]);
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      onClick={onCancel}
-    >
-      <div
-        className="mx-4 w-full max-w-md rounded-lg border border-border bg-bg-panel p-5 shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="mb-3 flex items-start gap-3">
-          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-accent" />
-          <div>
-            <h3 className="font-semibold text-ink">{title}</h3>
-            <p className="mt-1.5 text-sm text-ink-muted">{message}</p>
-          </div>
-        </div>
-        <div className="mt-5 flex justify-end gap-2">
-          <button
-            onClick={onCancel}
-            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-ink-muted hover:text-ink"
-          >
-            <X className="h-3.5 w-3.5" />
-            {cancelLabel}
-          </button>
-          <button
-            onClick={onConfirm}
-            className="rounded-md bg-accent px-4 py-1.5 text-sm font-medium text-white hover:bg-accent/90"
-          >
-            {confirmLabel}
-          </button>
-        </div>
-      </div>
     </div>
   );
 }

@@ -25,11 +25,11 @@ const SORTS: Array<{ value: string; label: string }> = [
   { value: "added", label: "添加时间" },
 ];
 // Data-health buckets: describe a broken/incomplete local index, not the film.
-// "unmatched" is the union of the two problem classes below it, so its count
-// is not their sum.
+// "unmatched" is the union of the two problem classes below it plus file-less
+// movies (which the library hides entirely - they surface only in the
+// console's data-health panel), so its count is not the chips' sum.
 const MATCH_ISSUES: Array<{ value: string; label: string; hint: string }> = [
-  { value: "unmatched", label: "有问题", hint: "无文件或缺 TMDB 信息" },
-  { value: "no_files", label: "无文件", hint: "有电影条目，但没有任何电影文件" },
+  { value: "unmatched", label: "有问题", hint: "无文件或缺 TMDB 信息（无文件的电影仅在控制台可见）" },
   { value: "no_tmdb", label: "缺 TMDB", hint: "有文件但条目信息不全（无 TMDB id，因此无封面）" },
   { value: "multi_version", label: "多版本", hint: "同一部电影有多个文件" },
 ];

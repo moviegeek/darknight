@@ -161,15 +161,27 @@ func TestEnrichCollection_PartsCachedAndResolved(t *testing.T) {
 	e := metadata.New(c, st, quietLogger())
 
 	// seed a collection row + one local movie that matches part 105 (owned);
-	// parts 166 and 196 will be "missing".
+	// parts 166 and 196 will be "missing". The movie carries a movie_file: a
+	// file-less row wouldn't count as owned (orphaned index entry).
 	colID, err := st.UpsertCollection(ctx, &tmdb.Collection{ID: 863, Name: "Back to the Future Collection"})
 	if err != nil {
 		t.Fatalf("upsert collection: %v", err)
 	}
-	if err := st.UpsertMovie(ctx, &model.Movie{
+	lib, err := st.CreateLibrary(ctx, "Films", "/movies", 0)
+	if err != nil {
+		t.Fatalf("create library: %v", err)
+	}
+	owned := &model.Movie{
 		Title: "Back to the Future", Year: 1985, TMDBID: 105, CollectionID: colID,
-	}); err != nil {
+	}
+	if err := st.UpsertMovie(ctx, owned); err != nil {
 		t.Fatalf("upsert movie: %v", err)
+	}
+	if err := st.UpsertMovieFile(ctx, &model.MovieFile{
+		MovieID: owned.ID, LibraryID: lib.ID,
+		DirPath: "Back.to.the.Future.1985", FileName: "Back.to.the.Future.1985.mkv",
+	}); err != nil {
+		t.Fatalf("upsert movie_file: %v", err)
 	}
 
 	ok, err := e.EnrichCollection(ctx, colID)

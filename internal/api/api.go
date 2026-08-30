@@ -68,6 +68,7 @@ func (a *API) Router() http.Handler {
 	r.Get("/movies", a.listMovies)
 	r.Get("/movies/facets", a.movieFacets)
 	r.Get("/movies/{id}", a.getMovie)
+	r.Delete("/movies/{id}", a.deleteMovie)
 	r.Get("/movies/{id}/cast", a.getMovieCast)
 	r.Get("/movies/{id}/files", a.listMovieFiles)
 	r.Get("/movies/{id}/files/{fid}", a.getMovieFile)
@@ -404,9 +405,11 @@ var (
 	facetHDRs        = []string{"HDR10", "HDR10+", "DV"}
 	facetSubLangs    = []string{"chi", "eng", "jpn", "kor"}
 	facetWatched     = []string{"unwatched", "watching", "watched"}
-	// facetMatchIssues are the data-health buckets; "unmatched" is the union
-	// of "no_files" and "no_tmdb" so its count is not their sum.
-	facetMatchIssues = []string{"unmatched", "no_files", "no_tmdb", "multi_version"}
+	// facetMatchIssues are the data-health buckets mirroring the FilterPanel's
+	// chips. "unmatched" is the union of "no_tmdb" and the file-less movies
+	// (which have no chip of their own - the console's data-health panel owns
+	// them), so its count is not the chips' sum.
+	facetMatchIssues = []string{"unmatched", "no_tmdb", "multi_version"}
 	// facetMatchStatuses are the state-machine values. Use a single-select chip
 	// group in the UI: pick one to filter to that bucket.
 	facetMatchStatuses = []string{"matched", "pending", "unmatched", "manual"}
@@ -586,6 +589,29 @@ func (a *API) getMovie(w http.ResponseWriter, r *http.Request) {
 		Genres []model.Genre `json:"genres"`
 	}{Movie: m, Genres: genres}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// deleteMovie drops a movie row from the index - the console's data-health
+// panel uses it to remove orphaned (file-less) entries. Dependent rows are
+// cleaned up transactionally; any movie_files are detached, not deleted
+// (movie_id -> NULL: they return to the unmatched pool and re-seed on the
+// next scan), and nothing on disk is touched.
+func (a *API) deleteMovie(w http.ResponseWriter, r *http.Request) {
+	id, err := parseInt64(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := a.Store.DeleteMovie(r.Context(), id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "movie not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	a.Logger.Info("movie deleted", "id", id)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // getMovieCast returns the cast + crew for a movie, joined with person info.

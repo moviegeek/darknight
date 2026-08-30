@@ -514,10 +514,10 @@ func TestListMovies_SearchAcrossTitleVariants(t *testing.T) {
 			OriginalTitle: "Inception", OriginalLanguage: "en",
 			TitleEn: "Inception", TitleZh: "盗梦空间", Country: "US"},
 	}
+	// attach a file to each row: the default list hides file-less movies, and
+	// this test exercises search, not the data-health buckets.
 	for _, m := range movies {
-		if err := s.UpsertMovie(ctx, m); err != nil {
-			t.Fatalf("insert: %v", err)
-		}
+		seedMovieWithFile(t, s, m, true)
 	}
 
 	find := func(q string) int {

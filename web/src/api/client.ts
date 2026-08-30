@@ -66,6 +66,10 @@ export const scanLibrary = (id: number) =>
 export const listMovies = (q: MovieQuery) =>
   http<MovieListResponse>(`/api/movies${qs(q)}`);
 export const getMovie = (id: number) => http<MovieDetail>(`/api/movies/${id}`);
+// Delete a movie row from the index. Dependent rows are cascaded; attached
+// files (if any) are detached back to the unmatched pool, not deleted.
+export const deleteMovie = (id: number) =>
+  http<void>(`/api/movies/${id}`, { method: "DELETE" });
 export const getMovieFacets = (q: MovieQuery) =>
   http<MovieFacets>(`/api/movies/facets${qs(q)}`);
 export const getMovieCast = (id: number) =>
