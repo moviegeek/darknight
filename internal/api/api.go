@@ -21,6 +21,7 @@ import (
 	"github.com/moviegeek/darknight/internal/model"
 	"github.com/moviegeek/darknight/internal/scanner"
 	"github.com/moviegeek/darknight/internal/store"
+	"github.com/moviegeek/darknight/internal/traktsync"
 )
 
 // API holds the dependencies shared by all handlers.
@@ -31,6 +32,9 @@ type API struct {
 	// Matcher powers the manual-match endpoints (live candidate search and
 	// batch rematch). Nil when TMDB is not configured.
 	Matcher  *matcher.Matcher
+	// TraktSync imports trakt.tv watch status when Trakt credentials are
+	// configured. Nil = feature hidden.
+	TraktSync *traktsync.Syncer
 	Logger   *slog.Logger
 
 	mu       sync.Mutex
@@ -86,6 +90,14 @@ func (a *API) Router() http.Handler {
 
 	r.Get("/dev/tables", a.listTables)
 	r.Post("/dev/sql", a.execSQL)
+
+	// Trakt watch-status sync (handlers in trakt.go)
+	r.Route("/trakt", func(r chi.Router) {
+		r.Post("/connect", a.traktConnect)
+		r.Get("/status", a.traktStatus)
+		r.Post("/sync", a.traktSync)
+		r.Post("/disconnect", a.traktDisconnect)
+	})
 	return r
 }
 

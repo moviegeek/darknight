@@ -26,6 +26,15 @@ type Config struct {
 	// title for the bilingual display (e.g. the Chinese title when the
 	// primary is English). Defaults to zh-CN.
 	TMDBLanguageAlt string
+	// TraktClientID and TraktClientSecret are the trakt.tv OAuth app
+	// credentials (create one at https://trakt.tv/oauth/applications). Both
+	// must be set to enable the Trakt watch-status sync.
+	TraktClientID     string
+	TraktClientSecret string
+	// TraktRedirectURI is sent on Trakt token refresh, which requires the URI
+	// registered in the app settings. The device flow has no real redirect,
+	// so the out-of-band placeholder is the default.
+	TraktRedirectURI string
 	// StaticDir is the directory served for the SPA. Empty = no static
 	// serving (used in dev where the frontend runs separately).
 	StaticDir string
@@ -50,15 +59,18 @@ func Load() (*Config, error) {
 		}
 	}
 	c := &Config{
-		DatabasePath: envStr("DARKNIGHT_DB", ".data/darknight.db"),
-		HTTPAddr:     envStr("DARKNIGHT_ADDR", ":8080"),
-		TMDBAPIKey:    envStr("TMDB_API_KEY", ""),
-		TMDBLanguage:  envStr("TMDB_LANGUAGE", "en-US"),
-		TMDBLanguageAlt: envStr("TMDB_LANGUAGE_ALT", "zh-CN"),
-		StaticDir:    envStr("DARKNIGHT_STATIC_DIR", ""),
-		ScanOnStart:  envBool("DARKNIGHT_SCAN_ON_START", false),
-		CORSOrigins:  envList("DARKNIGHT_CORS_ORIGINS"),
-		LogLevel:     envStr("DARKNIGHT_LOG_LEVEL", "info"),
+		DatabasePath:      envStr("DARKNIGHT_DB", ".data/darknight.db"),
+		HTTPAddr:          envStr("DARKNIGHT_ADDR", ":8080"),
+		TMDBAPIKey:        envStr("TMDB_API_KEY", ""),
+		TMDBLanguage:      envStr("TMDB_LANGUAGE", "en-US"),
+		TMDBLanguageAlt:   envStr("TMDB_LANGUAGE_ALT", "zh-CN"),
+		TraktClientID:     envStr("TRAKT_CLIENT_ID", ""),
+		TraktClientSecret: envStr("TRAKT_CLIENT_SECRET", ""),
+		TraktRedirectURI:  envStr("TRAKT_REDIRECT_URI", "urn:ietf:wg:oauth:2.0:oob"),
+		StaticDir:         envStr("DARKNIGHT_STATIC_DIR", ""),
+		ScanOnStart:       envBool("DARKNIGHT_SCAN_ON_START", false),
+		CORSOrigins:       envList("DARKNIGHT_CORS_ORIGINS"),
+		LogLevel:          envStr("DARKNIGHT_LOG_LEVEL", "info"),
 	}
 	return c, nil
 }
@@ -99,7 +111,8 @@ func envList(key string) []string {
 
 // String is used for at-startup logging.
 func (c *Config) String() string {
-	return fmt.Sprintf("db=%s addr=%s tmdb=%v lang=%s/%s static=%q scanOnStart=%v log=%s",
+	return fmt.Sprintf("db=%s addr=%s tmdb=%v lang=%s/%s trakt=%v static=%q scanOnStart=%v log=%s",
 		c.DatabasePath, c.HTTPAddr, c.TMDBAPIKey != "", c.TMDBLanguage, c.TMDBLanguageAlt,
+		c.TraktClientID != "" && c.TraktClientSecret != "",
 		c.StaticDir, c.ScanOnStart, c.LogLevel)
 }

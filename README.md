@@ -37,6 +37,15 @@ Single binary, single database file, no external services.
   filter panel (resolution / source / codec / HDR / Dolby Vision / country /
   subtitle / watched state / search), quick chips, and a movie detail page
   that compares every physical version of a film side by side.
+- **Trakt watch-status sync** (optional) - when `TRAKT_CLIENT_ID` /
+  `TRAKT_CLIENT_SECRET` are set (create an API app at
+  trakt.tv/oauth/applications), connect your trakt.tv account once via the
+  OAuth device flow (设置 -> 连接 Trakt) and import your watched history into
+  the library's watched filter. The sync is one-way and additive: Trakt can
+  mark a local movie watched (and advance `last_played_at`), but never
+  un-watches one or touches progress/rating. Movies are matched by TMDB id,
+  then IMDb id; films watched on Trakt but absent from the library are
+  reported as unmatched and skipped.
 
 ## Architecture
 
@@ -51,6 +60,8 @@ darknight/                     Go module (github.com/moviegeek/darknight)
 │   ├── ffprobe/               ffprobe JSON client
 │   ├── scanner/               dir walk + classify + upsert (incremental)
 │   ├── store/                 SQLite (modernc, pure Go) + migrations + queries
+│   ├── trakt/                 trakt.tv REST client (OAuth device flow + watched list)
+│   ├── traktsync/             one-way watch-status import (Trakt -> watch_status)
 │   ├── api/                   chi REST handlers (/api/*)
 │   └── server/                router + embedded SPA serving
 └── web/                       frontend (Vite + React + TS + Tailwind)
@@ -110,6 +121,9 @@ All via environment variables:
 | `TMDB_API_KEY` | _(empty)_ | enables TMDB metadata enrichment |
 | `TMDB_LANGUAGE` | `en-US` | primary locale for TMDB text (overview, localized title) |
 | `TMDB_LANGUAGE_ALT` | `zh-CN` | secondary locale for the bilingual title fetch |
+| `TRAKT_CLIENT_ID` | _(empty)_ | trakt.tv OAuth app client id (enables Trakt sync together with the secret) |
+| `TRAKT_CLIENT_SECRET` | _(empty)_ | trakt.tv OAuth app client secret |
+| `TRAKT_REDIRECT_URI` | `urn:ietf:wg:oauth:2.0:oob` | URI sent on Trakt token refresh; must match the app settings |
 | `DARKNIGHT_STATIC_DIR` | _(empty)_ | serve SPA from disk (dev) instead of embed |
 | `DARKNIGHT_CORS_ORIGINS` | _(empty)_ | comma-separated allowed origins |
 | `DARKNIGHT_SCAN_ON_START` | `false` | scan all libraries on boot |
@@ -132,6 +146,11 @@ GET    /movies/{id}
 GET    /movies/{id}/files
 GET    /movies/{id}/files/{fid}    # includes audio_tracks + subtitles
 GET    /collections
+
+POST   /trakt/connect              # start OAuth device flow -> {user_code, verification_url}
+GET    /trakt/status               # connection + last-sync state; polls a pending connect
+POST   /trakt/sync                 # one watch-status import -> statistics
+POST   /trakt/disconnect           # forget stored tokens
 ```
 
 ## Maintenance

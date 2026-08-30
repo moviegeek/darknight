@@ -22,7 +22,7 @@ import type {
   CandidatesResponse,
 } from "./types";
 
-async function http<T>(path: string, init?: RequestInit): Promise<T> {
+export async function http<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     headers: { Accept: "application/json", ...(init?.headers ?? {}) },
     ...init,

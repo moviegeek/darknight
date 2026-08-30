@@ -22,7 +22,7 @@ audio_tracks / subtitles    genres / people / credits / collections
 
 ## 迁移机制
 
-迁移文件位于 `internal/store/migrations/`，通过 `//go:embed` 编译进二进制。启动时 `migrate()` 按文件名字典序执行未应用的 `.sql` 文件，并用 `schema_migrations` 表记录已执行的版本。目前有 8 个迁移（`001` ~ `008`）。
+迁移文件位于 `internal/store/migrations/`，通过 `//go:embed` 编译进二进制。启动时 `migrate()` 按文件名字典序执行未应用的 `.sql` 文件，并用 `schema_migrations` 表记录已执行的版本。目前有 11 个迁移（`001` ~ `011`）。
 
 ---
 
@@ -200,6 +200,21 @@ audio_tracks / subtitles    genres / people / credits / collections
 ### 13. `scan_jobs` - 扫描历史
 
 记录每次扫描的统计信息（added/updated/removed）和状态（running/completed/failed），用于可观测性。
+
+---
+
+### 14. `trakt_state` - Trakt 同步状态（migration 011）
+
+单行表（`id=1`，迁移时预插入），存放 trakt.tv 集成的运行时状态。OAuth 应用凭据（client id/secret）走环境变量，不落库。
+
+| 列 | 说明 |
+|---|---|
+| `access_token` / `refresh_token` / `token_expires_at` | OAuth token 对；refresh token 单次有效，每次刷新两个字段一起轮换 |
+| `username` | 连接时选择的 Trakt 账号名（展示用） |
+| `remote_watched_at` | 上次成功同步时 `/sync/last_activities` 的 `movies.watched_at`（RFC3339），值不变则跳过同步 |
+| `last_sync_at` / `last_sync_result` | 上次同步时间与 JSON 统计摘要（设置页展示） |
+
+`watch_status` 的写入方：`store.MarkWatched()`（Trakt 同步使用，union 语义——只标记已看、推进 `last_played_at`，从不清除已有行，不碰 `progress`/`rating`）。
 
 ---
 

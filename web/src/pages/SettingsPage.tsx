@@ -9,6 +9,7 @@ import {
   scanLibrary,
 } from "../api/client";
 import type { Library } from "../api/types";
+import TraktSyncCard from "../components/TraktSyncCard";
 
 export default function SettingsPage() {
   const qc = useQueryClient();
@@ -168,6 +169,8 @@ export default function SettingsPage() {
           </ul>
         )}
       </section>
+
+      <TraktSyncCard />
 
       <p className="mt-6 text-xs text-ink-dim">
         提示：扫描需要系统已安装 ffmpeg/ffprobe，用于读取文件的真实编码、码率、音轨等信息。

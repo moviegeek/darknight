@@ -35,6 +35,8 @@ import (
 	"github.com/moviegeek/darknight/internal/server"
 	"github.com/moviegeek/darknight/internal/store"
 	"github.com/moviegeek/darknight/internal/tmdb"
+	"github.com/moviegeek/darknight/internal/trakt"
+	"github.com/moviegeek/darknight/internal/traktsync"
 )
 
 func main() {
@@ -63,6 +65,17 @@ func main() {
 
 	apih := api.New(rt.st, rt.sc, rt.log, rt.enricher)
 	apih.Matcher = rt.matcher
+
+	// Trakt watch-status sync: enabled only when app credentials are set.
+	traktSync := traktsync.New(rt.st,
+		trakt.New(rt.cfg.TraktClientID, rt.cfg.TraktClientSecret, rt.cfg.TraktRedirectURI), rt.log)
+	if traktSync.Enabled() {
+		apih.TraktSync = traktSync
+		rt.log.Info("trakt watch-status sync enabled")
+	} else {
+		rt.log.Info("trakt sync disabled (set TRAKT_CLIENT_ID / TRAKT_CLIENT_SECRET to enable)")
+	}
+
 	handler := server.New(rt.cfg, apih, rt.log)
 
 	if rt.cfg.ScanOnStart {
