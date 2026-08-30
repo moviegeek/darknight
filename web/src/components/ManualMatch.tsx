@@ -56,14 +56,17 @@ function ManualMatchDialog({
   onClose: () => void;
 }) {
   const qc = useQueryClient();
-  // seed the search box with the parsed title; the user can refine it
+  // seed the search box with the parsed title and year; the user can refine
+  // either. The year is optional - clearing it searches year-agnostic.
   const [term, setTerm] = useState(movie.title);
+  const [year, setYear] = useState(movie.year > 0 ? String(movie.year) : "");
   const [query, setQuery] = useState(movie.title);
+  const [queryYear, setQueryYear] = useState(movie.year || undefined);
   const [matched, setMatched] = useState<MatchCandidate | null>(null);
 
   const { data, isFetching, error } = useQuery({
-    queryKey: ["candidates", movie.id, query],
-    queryFn: () => searchCandidates(query, movie.id, movie.year || undefined),
+    queryKey: ["candidates", movie.id, query, queryYear],
+    queryFn: () => searchCandidates(query, movie.id, queryYear),
     enabled: query.trim().length > 0,
   });
 
@@ -121,6 +124,7 @@ function ManualMatchDialog({
           onSubmit={(e) => {
             e.preventDefault();
             setQuery(term);
+            setQueryYear(Number(year) || undefined);
           }}
           className="flex gap-2"
         >
@@ -134,6 +138,14 @@ function ManualMatchDialog({
               className="w-full rounded-md border border-border bg-bg py-2 pl-8 pr-3 text-sm outline-none focus:border-ink-dim"
             />
           </div>
+          <input
+            value={year}
+            onChange={(e) => setYear(e.target.value.replace(/\D/g, "").slice(0, 4))}
+            placeholder="年份"
+            title="可选：影响候选排序；清空则不使用年份"
+            inputMode="numeric"
+            className="w-20 rounded-md border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-ink-dim"
+          />
           <button
             type="submit"
             className="rounded-md border border-border px-3 py-2 text-sm text-ink-muted hover:text-ink"
