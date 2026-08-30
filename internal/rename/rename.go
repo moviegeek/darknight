@@ -124,11 +124,15 @@ func isTechnical(f string) bool {
 // sanitize turns a display title into a release-name token: punctuation and
 // Unicode punctuation collapse to dots, CJK stays verbatim, runs of dots
 // collapse, leading/trailing dots strip. Ampersands become "and" (scene
-// convention dislikes '&' in names).
+// convention dislikes '&' in names). Hyphens and apostrophes stay verbatim -
+// dropping them mangles real titles ("The A-Team", "Coup d'Etat") and the
+// Unicode look-alikes (’ U+2019, – U+2013) already pass through isNameRune.
 //
 //	"Léon: The Professional" -> "Léon.The.Professional"
 //	"Alien³"                 -> "Alien³"   (kept; scene names keep superscripts)
 //	"Thelma & Louise"        -> "Thelma.and.Louise"
+//	"A Sun-Tribe Myth"       -> "A.Sun-Tribe.Myth"
+//	"Coup d'Etat"            -> "Coup.d'Etat"
 func sanitize(title string) string {
 	var b strings.Builder
 	lastDot := false
@@ -163,6 +167,8 @@ func sanitize(title string) string {
 
 func isNameRune(r rune) bool {
 	switch {
+	case r == '-', r == '\'': // kept inside titles: "Sun-Tribe", "Coup d'Etat"
+		return true
 	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
 		return true
 	case r >= 0x00C0: // Latin-1 supplement onward: é, ł, CJK, kana, hangul, ³

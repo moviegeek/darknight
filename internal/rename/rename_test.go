@@ -37,6 +37,11 @@ func TestTitleYear(t *testing.T) {
 		// already canonical -> unchanged
 		{"Heat.1995.BluRay.1080p.x264-GROUP", "Heat", 1995,
 			"Heat.1995.BluRay.1080p.x264-GROUP"},
+		// hyphens and apostrophes in the title are kept verbatim
+		{"Bakumatsu.Taiyo.Den.1957.1080p.BluRay.x264", "A Sun-Tribe Myth from the Bakumatsu Era", 1957,
+			"A.Sun-Tribe.Myth.from.the.Bakumatsu.Era.1957.1080p.BluRay.x264"},
+		{"Coup.d.Etat.1973.1080p.BluRay.x264", "Coup d'Etat", 1973,
+			"Coup.d'Etat.1973.1080p.BluRay.x264"},
 	}
 	for _, c := range cases {
 		if got := TitleYear(c.old, c.title, c.year); got != c.want {
