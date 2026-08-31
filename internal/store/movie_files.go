@@ -11,7 +11,7 @@ import (
 
 // FindMovieFileByRelease looks up a movie_file by its unique (library, dir,
 // file) release key. Returns ErrNotFound when absent - the scanner uses this
-// to decide between insert and update. fileName is '' for disc releases.
+// to decide between insert and update. fileName is ” for disc releases.
 func (s *Store) FindMovieFileByRelease(ctx context.Context, libraryID int64, dirPath, fileName string) (*model.MovieFile, error) {
 	row := s.DB.QueryRowContext(ctx, `
 SELECT id, movie_id, library_id, '' AS library_name, dir_path, file_name, is_disc, file_size, file_modified,
@@ -252,6 +252,65 @@ FROM subtitles WHERE movie_file_id = ? ORDER BY "order"`, movieFileID)
 		sub.IsEmbedded = isEmb != 0
 		sub.IsDefault = isDef != 0
 		out = append(out, sub)
+	}
+	return out, rows.Err()
+}
+
+// StaleMovieFile is one movie_files row a scan is about to prune, with the
+// owning movie's title so prune logs can name the film, not just the path.
+type StaleMovieFile struct {
+	DirPath  string
+	FileName string // '' for disc releases
+	MovieID  int64  // 0 when the file was never attached to a movie
+	Title    string
+	Year     int
+}
+
+// ListStaleMovieFiles returns the movie_files of a library whose (dir, file)
+// release key is absent from keep - exactly the rows RemoveStaleMovieFiles
+// will delete. An empty keep set lists every file of the library, mirroring
+// the delete. The scanner logs them before pruning so a "removed=N" stat is
+// traceable to concrete files.
+func (s *Store) ListStaleMovieFiles(ctx context.Context, libraryID int64, keep []string) ([]StaleMovieFile, error) {
+	q := `
+SELECT mf.dir_path, mf.file_name, mf.movie_id, m.title, m.year
+FROM movie_files mf
+LEFT JOIN movies m ON m.id = mf.movie_id
+WHERE mf.library_id = ?`
+	args := make([]interface{}, 0, len(keep)+1)
+	args = append(args, libraryID)
+	if len(keep) > 0 {
+		// NOT IN (...) with a bounded placeholder list; the key separator is
+		// built with char(0) to match the Go-side releaseKey joiner ('\x00'
+		// literals truncate in SQLite).
+		placeholders := ""
+		for i, key := range keep {
+			if i > 0 {
+				placeholders += ","
+			}
+			placeholders += "?"
+			args = append(args, key)
+		}
+		q += ` AND mf.dir_path || char(0) || mf.file_name NOT IN (` + placeholders + `)`
+	}
+	rows, err := s.DB.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []StaleMovieFile{}
+	for rows.Next() {
+		var sf StaleMovieFile
+		var movieID sql.NullInt64
+		var title sql.NullString
+		var year sql.NullInt64
+		if err := rows.Scan(&sf.DirPath, &sf.FileName, &movieID, &title, &year); err != nil {
+			return nil, err
+		}
+		sf.MovieID = movieID.Int64
+		sf.Title = title.String
+		sf.Year = int(year.Int64)
+		out = append(out, sf)
 	}
 	return out, rows.Err()
 }

@@ -7,6 +7,7 @@
 //	darknight reenrich  re-run TMDB enrichment to backfill bilingual titles
 //	darknight reprobe   re-probe files to backfill the cached ffprobe JSON
 //	darknight rematch   re-run scored TMDB matching for unmatched movies
+//	darknight rescan    rescan libraries, same as the web UI scan button
 //
 // Run with no subcommand (or an unknown one) to start the server as usual.
 package main
@@ -53,6 +54,8 @@ func main() {
 			os.Exit(runReprobe(ctx, os.Args[2:]))
 		case "rematch":
 			os.Exit(runRematch(ctx, os.Args[2:]))
+		case "rescan":
+			os.Exit(runRescan(ctx, os.Args[2:]))
 		}
 	}
 
@@ -134,6 +137,14 @@ func buildRuntime(ctx context.Context) (*runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open store: %w", err)
 	}
+	sc, enricher, matchr := wireScanStack(st, cfg, log)
+	return &runtime{cfg: cfg, log: log, st: st, sc: sc, enricher: enricher, matcher: matchr}, nil
+}
+
+// wireScanStack wires the scanner + TMDB enricher + scored matcher over st.
+// Shared by buildRuntime and the dry-run rescan, which rebuilds the identical
+// stack over a snapshot copy of the database.
+func wireScanStack(st *store.Store, cfg *config.Config, log *slog.Logger) (*scanner.Scanner, *metadata.Enricher, *matcher.Matcher) {
 	sc := scanner.New(st, log)
 	// wire TMDB enrichment when an API key is configured; otherwise the app
 	// runs in offline mode using only filename + .nfo metadata.
@@ -152,7 +163,7 @@ func buildRuntime(ctx context.Context) (*runtime, error) {
 		matchr = matcher.New(tmdbClient, log)
 		sc.Matcher = matchr
 	}
-	return &runtime{cfg: cfg, log: log, st: st, sc: sc, enricher: enricher, matcher: matchr}, nil
+	return sc, enricher, matchr
 }
 
 // runReenrich re-runs TMDB enrichment for movies missing the bilingual /
@@ -375,6 +386,202 @@ func runRematch(ctx context.Context, args []string) int {
 	return 0
 }
 
+// rescanOpts holds the parsed flags of the rescan subcommand.
+type rescanOpts struct {
+	library string // "all" or a numeric library id
+	dryRun  bool
+}
+
+// parseRescanArgs understands "--library=<id|all>" (or "--library <id|all>")
+// and "--dry-run".
+func parseRescanArgs(args []string) (rescanOpts, error) {
+	var o rescanOpts
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--dry-run":
+			o.dryRun = true
+		case strings.HasPrefix(a, "--library="):
+			o.library = strings.TrimPrefix(a, "--library=")
+		case a == "--library":
+			if i+1 >= len(args) {
+				return o, fmt.Errorf("--library needs a value: a library id or \"all\"")
+			}
+			i++
+			o.library = args[i]
+		default:
+			return o, fmt.Errorf("unknown flag %q", a)
+		}
+	}
+	if strings.EqualFold(o.library, "all") {
+		o.library = "all"
+	}
+	if o.library == "" {
+		return o, fmt.Errorf("--library is required: a library id or \"all\"")
+	}
+	if o.library != "all" {
+		if _, err := strconv.ParseInt(o.library, 10, 64); err != nil {
+			return o, fmt.Errorf("invalid --library %q: expected a library id or \"all\"", o.library)
+		}
+	}
+	return o, nil
+}
+
+// runRescan rescans libraries exactly like the "扫描" button in the web UI: the
+// same incremental Scanner.ScanLibrary pass (unchanged files are skipped),
+// run synchronously with per-library stats.
+//
+// With --dry-run nothing is written to the database: the scan runs against a
+// throwaway Snapshot copy with debug logging forced on, so the log shows every
+// decision the real scan would make. TMDB is still queried live whenever the
+// scan needs data the local cache does not have - only the results land in the
+// snapshot, never in the real database.
+//
+//	darknight rescan --library=3             rescan library 3
+//	darknight rescan --library=all           rescan every library
+//	darknight rescan --dry-run --library=3   preview the scan of library 3
+func runRescan(ctx context.Context, args []string) int {
+	opts, err := parseRescanArgs(args)
+	if err != nil {
+		slog.New(slog.NewTextHandler(os.Stderr, nil)).Error("rescan", "err", err,
+			"usage", "darknight rescan [--dry-run] --library=<id|all>")
+		return 2
+	}
+
+	rt, err := buildRuntime(ctx)
+	if err != nil {
+		slog.New(slog.NewTextHandler(os.Stdout, nil)).Error("startup", "err", err)
+		return 1
+	}
+	defer rt.st.Close()
+
+	libs, err := resolveRescanLibraries(ctx, rt.st, opts.library)
+	if err != nil {
+		rt.log.Error("rescan", "err", err)
+		return 1
+	}
+	if len(libs) == 0 {
+		rt.log.Info("rescan: no libraries configured", "dry_run", opts.dryRun)
+		return 0
+	}
+
+	names := make([]string, 0, len(libs))
+	for _, l := range libs {
+		names = append(names, fmt.Sprintf("%s(%d)", l.Name, l.ID))
+	}
+	rt.log.Info("rescan", "libraries", strings.Join(names, ", "), "dry_run", opts.dryRun)
+
+	if opts.dryRun {
+		return rescanDryRun(ctx, rt, libs)
+	}
+	failed := scanLibraries(ctx, rt.sc, rt.log, libs, "scan library done")
+	if failed > 0 {
+		return 1
+	}
+	return 0
+}
+
+// resolveRescanLibraries maps the --library flag ("all" or a numeric id) to
+// the library rows to scan.
+func resolveRescanLibraries(ctx context.Context, st *store.Store, spec string) ([]model.Library, error) {
+	libs, err := st.ListLibraries(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list libraries: %w", err)
+	}
+	if spec == "all" {
+		return libs, nil
+	}
+	id, _ := strconv.ParseInt(spec, 10, 64)
+	for _, l := range libs {
+		if l.ID == id {
+			return []model.Library{l}, nil
+		}
+	}
+	return nil, fmt.Errorf("library %s not found", spec)
+}
+
+// rescanDryRun runs the scan of libs against a throwaway snapshot of the
+// database with debug logging forced on. The real store is closed right after
+// the snapshot is taken, so nothing the scan does - movie upserts, match
+// decisions, TMDB cache writes, pruning, checkpoints - can reach the real
+// database.
+func rescanDryRun(ctx context.Context, rt *runtime, libs []model.Library) int {
+	// VACUUM INTO refuses to overwrite an existing file, so reserve a unique
+	// name via CreateTemp and drop the placeholder.
+	f, err := os.CreateTemp("", "darknight-rescan-dryrun-*.db")
+	if err != nil {
+		rt.log.Error("create snapshot file", "err", err)
+		return 1
+	}
+	snap := f.Name()
+	f.Close()
+	_ = os.Remove(snap)
+	defer removeSnapshotSidecars(snap)
+
+	if err := rt.st.Snapshot(ctx, snap); err != nil {
+		rt.log.Error("snapshot database", "err", err)
+		return 1
+	}
+	// the real database is never touched past this point
+	rt.st.Close()
+
+	// force debug logging regardless of DARKNIGHT_LOG_LEVEL: the point of a
+	// dry run is the detailed trace of every decision the real scan would make.
+	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(log)
+
+	snapSt, err := store.Open(ctx, snap)
+	if err != nil {
+		log.Error("open snapshot", "err", err)
+		return 1
+	}
+	defer snapSt.Close()
+
+	sc, _, _ := wireScanStack(snapSt, rt.cfg, log)
+
+	names := make([]string, 0, len(libs))
+	for _, l := range libs {
+		names = append(names, fmt.Sprintf("%s(%d)", l.Name, l.ID))
+	}
+	log.Info("rescan dry-run", "database", rt.cfg.DatabasePath,
+		"libraries", strings.Join(names, ", "),
+		"note", "scanning a throwaway snapshot; no changes are written to the real database")
+	failed := scanLibraries(ctx, sc, log, libs, "scan library done (dry-run)")
+	log.Info("rescan dry-run done", "libraries", len(libs), "failed", failed)
+	if failed > 0 {
+		return 1
+	}
+	return 0
+}
+
+// removeSnapshotSidecars deletes a snapshot database plus its WAL/SHM sidecar
+// files after a dry-run scan. Best effort - the temp dir cleans up eventually.
+func removeSnapshotSidecars(path string) {
+	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+		_ = os.Remove(p)
+	}
+}
+
+// scanLibraries scans libs sequentially, logging per-library stats under the
+// given done label. A library scan that aborts entirely is logged and counted;
+// errors on individual releases are already logged by the scanner and only
+// surface in the stats. Returns the number of failed library scans.
+func scanLibraries(ctx context.Context, sc *scanner.Scanner, log *slog.Logger, libs []model.Library, doneLabel string) int {
+	failed := 0
+	for _, lib := range libs {
+		stats, err := sc.ScanLibrary(ctx, &lib)
+		if err != nil {
+			log.Error("scan library", "library", lib.Name, "err", err)
+			failed++
+			continue
+		}
+		log.Info(doneLabel, "library", lib.Name,
+			"added", stats.Added, "updated", stats.Updated,
+			"unchanged", stats.Unchanged, "removed", stats.Removed, "errors", stats.Errors)
+	}
+	return failed
+}
+
 // parseLogLevel maps a config string ("debug"/"info"/"warn"/"error") to a
 // slog.Level, defaulting to info for any unrecognised value.
 func parseLogLevel(s string) slog.Level {
@@ -398,14 +605,5 @@ func scanAll(ctx context.Context, st *store.Store, sc *scanner.Scanner, log *slo
 		log.Error("list libraries for startup scan", "err", err)
 		return
 	}
-	for _, lib := range libs {
-		stats, err := sc.ScanLibrary(ctx, &lib)
-		if err != nil {
-			log.Error("scan library", "library", lib.Name, "err", err)
-			continue
-		}
-		log.Info("scan library done", "library", lib.Name,
-			"added", stats.Added, "updated", stats.Updated,
-			"unchanged", stats.Unchanged, "removed", stats.Removed, "errors", stats.Errors)
-	}
+	scanLibraries(ctx, sc, log, libs, "scan library done")
 }

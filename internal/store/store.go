@@ -175,6 +175,18 @@ func (s *Store) Checkpoint(ctx context.Context) error {
 	return err
 }
 
+// Snapshot writes a consistent copy of the whole database (WAL contents
+// included) to dest using SQLite's VACUUM INTO. The source database is only
+// read, so it is safe to snapshot while the app is live. dest must not already
+// exist - SQLite refuses to overwrite. Used by `rescan --dry-run`, which scans
+// a throwaway snapshot so the real database stays untouched.
+func (s *Store) Snapshot(ctx context.Context, dest string) error {
+	if _, err := s.DB.ExecContext(ctx, `VACUUM INTO ?`, dest); err != nil {
+		return fmt.Errorf("vacuum into %s: %w", dest, err)
+	}
+	return nil
+}
+
 func (s *Store) appliedMigrations(ctx context.Context) (map[string]bool, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT version FROM schema_migrations`)
 	if err != nil {

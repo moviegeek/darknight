@@ -171,6 +171,16 @@ func (sc *Scanner) ScanLibrary(ctx context.Context, lib *model.Library) (Stats, 
 		return stats, err
 	}
 
+	// list the doomed rows before deleting so a "removed=N" stat is traceable
+	// to concrete files (and the movies they belong to).
+	if stale, err := sc.Store.ListStaleMovieFiles(ctx, lib.ID, seen); err != nil {
+		sc.Logger.Warn("list stale files", "err", err)
+	} else {
+		for _, sf := range stale {
+			sc.Logger.Info("prune stale file", "library", lib.Name,
+				"dir", sf.DirPath, "file", sf.FileName, "movie", movieLabel(sf.Title, sf.Year))
+		}
+	}
 	removed, err := sc.Store.RemoveStaleMovieFiles(ctx, lib.ID, seen)
 	if err != nil {
 		sc.Logger.Warn("prune stale", "err", err)
@@ -205,6 +215,18 @@ func kindString(k releaseKind) string {
 	return "file"
 }
 
+// movieLabel renders "Title (Year)" for scan log lines, tolerating a missing
+// year or title.
+func movieLabel(title string, year int) string {
+	if title == "" {
+		return "?"
+	}
+	if year > 0 {
+		return fmt.Sprintf("%s (%d)", title, year)
+	}
+	return title
+}
+
 // prevSize / prevMtime return the stored size / mtime of an existing release,
 // or 0 when there is no prior record. Used for incremental-check debug logs.
 func prevSize(mf *model.MovieFile) int64 {
@@ -232,7 +254,7 @@ var skipDirNames = map[string]bool{
 }
 
 // releaseKey is the movie_files uniqueness key: dir + file_name joined with a
-// NUL byte (file_name is '' for disc releases).
+// NUL byte (file_name is ” for disc releases).
 func releaseKey(relDir, fileName string) string {
 	return relDir + "\x00" + fileName
 }
@@ -471,12 +493,19 @@ func (sc *Scanner) scanOneFile(
 	case updatedFlag:
 		outcome = "updated"
 	}
+	// added / updated are the interesting minority of an incremental scan:
+	// surface them at info so a summary stat like "added=1" can be traced to
+	// concrete files without wading through the debug trace.
+	if outcome != "unchanged" {
+		sc.Logger.Info("file "+outcome, "dir", relDir, "file", fileName,
+			"movie", movieLabel(meta.Title, meta.Year))
+	}
 	sc.Logger.Debug("file done", "dir", relDir, "file", fileName, "outcome", outcome, "movie_id", mf.MovieID)
 	return releaseKey(relDir, fileName), existing == nil, updatedFlag, unchanged, nil
 }
 
 // scanDisc handles a BDMV folder release: one movie_files row with
-// file_name='' and size summed over BDMV/STREAM.
+// file_name=” and size summed over BDMV/STREAM.
 func (sc *Scanner) scanDisc(
 	ctx context.Context,
 	lib *model.Library,
@@ -534,6 +563,13 @@ func (sc *Scanner) scanDisc(
 		if err := sc.Store.ReplaceSubtitles(ctx, mf.ID, subtitles); err != nil {
 			sc.Logger.Warn("replace subs", "err", err)
 		}
+	}
+	// mirror the file path's added/updated info lines for disc releases
+	switch {
+	case existing == nil:
+		sc.Logger.Info("disc added", "dir", relDir, "movie", movieLabel(dirMeta.Title, dirMeta.Year))
+	case !unchanged:
+		sc.Logger.Info("disc updated", "dir", relDir, "movie", movieLabel(dirMeta.Title, dirMeta.Year))
 	}
 	sc.Logger.Debug("disc done", "dir", relDir, "movie_id", mf.MovieID)
 	return releaseKey(relDir, ""), existing == nil, !unchanged && existing != nil, unchanged, nil
