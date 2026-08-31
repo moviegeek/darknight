@@ -4,13 +4,16 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Eye, EyeOff, Layers, RefreshCw } from "lucide-react";
 
 import { enrichAllCollections, listCollections, tmdbImage } from "../api/client";
+import { CardSizeSlider } from "../components/CardSizeSlider";
+import { useCardSize } from "../lib/useCardSize";
 import { useShowMissing } from "../lib/useShowMissing";
 import { cn } from "../lib/format";
 import type { CollectionWithCount } from "../api/types";
 
 export default function CollectionsPage() {
   const qc = useQueryClient();
-  const [cardSize, setCardSize] = useState(200);
+  // card size is the persisted global preference shared with the library page.
+  const [cardSize, setCardSize] = useCardSize();
   // includeSingles=false hides collections with <=1 local movie by default.
   // Toggling it on sends min_movies=1 to include those lone-member collections.
   const [includeSingles, setIncludeSingles] = useState(false);
@@ -171,25 +174,6 @@ function CollectionCard({ collection, size }: { collection: CollectionWithCount;
         </div>
       </div>
     </Link>
-  );
-}
-
-function CardSizeSlider({ size, onChange }: { size: number; onChange: (n: number) => void }) {
-  return (
-    <div className="flex items-center gap-3 rounded-md border border-border bg-bg-panel px-3 py-1.5 text-xs text-ink-muted">
-      <span>小</span>
-      <input
-        type="range"
-        min={140}
-        max={320}
-        step={10}
-        value={size}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className="w-32 accent-accent sm:w-40"
-      />
-      <span>大</span>
-      <span className="ml-1 w-10 text-right tabular-nums text-ink">{size}px</span>
-    </div>
   );
 }
 

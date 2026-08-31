@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, RefreshCw } from "lucide-react";
@@ -10,7 +10,9 @@ import {
   enrichCollection,
   tmdbImage,
 } from "../api/client";
+import { CardSizeSlider } from "../components/CardSizeSlider";
 import { MovieCard } from "../components/MovieCard";
+import { useCardSize } from "../lib/useCardSize";
 import { useShowMissing } from "../lib/useShowMissing";
 import { cn } from "../lib/format";
 import type { CollectionPart, MovieListItem } from "../api/types";
@@ -19,7 +21,8 @@ export default function CollectionPage() {
   const { id } = useParams<{ id: string }>();
   const collectionId = Number(id);
   const qc = useQueryClient();
-  const [cardSize, setCardSize] = useState(160);
+  // card size is the persisted global preference shared with the library page.
+  const [cardSize, setCardSize] = useCardSize();
   // showMissing is a global preference (toggled on the collections list page)
   // applied to every detail page; it is persisted in localStorage so it
   // survives navigation.
@@ -300,25 +303,6 @@ function OwnedOnlyGrid({
       {movies.map((m) => (
         <MovieCard key={m.id} movie={m} size={size} />
       ))}
-    </div>
-  );
-}
-
-function CardSizeSlider({ size, onChange }: { size: number; onChange: (n: number) => void }) {
-  return (
-    <div className="flex items-center gap-3 rounded-md border border-border bg-bg-panel px-3 py-1.5 text-xs text-ink-muted">
-      <span>小</span>
-      <input
-        type="range"
-        min={100}
-        max={320}
-        step={10}
-        value={size}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className="w-32 accent-accent sm:w-40"
-      />
-      <span>大</span>
-      <span className="ml-1 w-10 text-right tabular-nums text-ink">{size}px</span>
     </div>
   );
 }

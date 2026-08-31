@@ -3,8 +3,10 @@ import { useQuery } from "@tanstack/react-query";
 
 import { getMovieFacets, listCountries, listMovies } from "../api/client";
 import type { MovieQuery } from "../api/types";
+import { CardSizeSlider } from "../components/CardSizeSlider";
 import { FilterPanel } from "../components/FilterPanel";
 import { MovieCard } from "../components/MovieCard";
+import { useCardSize } from "../lib/useCardSize";
 import { useLibraryQuery } from "../lib/useLibraryQuery";
 
 export default function LibraryPage() {
@@ -12,7 +14,9 @@ export default function LibraryPage() {
   // sort survive opening a movie's detail page and navigating back (which
   // unmounts this component and would otherwise reset useState).
   const [query, setQuery] = useLibraryQuery();
-  const [cardSize, setCardSize] = useState(160);
+  // card size is a persisted global preference shared with the collection
+  // pages, so the grid density survives navigation and reloads too.
+  const [cardSize, setCardSize] = useCardSize();
   const [showCounts, setShowCounts] = useState(true);
 
   const { data, isLoading, error } = useQuery({
@@ -122,31 +126,6 @@ export default function LibraryPage() {
           </>
         )}
       </div>
-    </div>
-  );
-}
-
-function CardSizeSlider({
-  size,
-  onChange,
-}: {
-  size: number;
-  onChange: (size: number) => void;
-}) {
-  return (
-    <div className="flex items-center gap-3 rounded-md border border-border bg-bg-panel px-3 py-1.5 text-xs text-ink-muted">
-      <span>小</span>
-      <input
-        type="range"
-        min={100}
-        max={320}
-        step={10}
-        value={size}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className="w-32 accent-accent sm:w-40"
-      />
-      <span>大</span>
-      <span className="ml-1 w-10 text-right tabular-nums text-ink">{size}px</span>
     </div>
   );
 }
