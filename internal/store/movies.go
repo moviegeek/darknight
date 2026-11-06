@@ -312,10 +312,17 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
 // MovieFilter carries the optional dimensions for the movies list endpoint.
 // Empty / zero values mean "no filter on this dimension".
 type MovieFilter struct {
-	Query            string   // title substring
-	Genres           []string // any-of (OR)
-	YearFrom         int
-	YearTo           int
+	Query    string   // title substring
+	Genres   []string // any-of (OR)
+	YearFrom int
+	YearTo   int
+	// RuntimeBucket selects a fixed runtime histogram band (empty = no filter):
+	//   "0-1"   - (0, 60] minutes
+	//   "1-2"   - (60, 120] minutes
+	//   "2-3"   - (120, 180] minutes
+	//   "3-inf" - > 180 minutes
+	// Unknown/zero runtimes never match a band.
+	RuntimeBucket    string
 	Resolution       string // matches any movie_file with this resolution
 	Source           string
 	VideoCodec       string
@@ -344,7 +351,7 @@ type MovieFilter struct {
 
 // MovieSort selects the list ordering.
 type MovieSort struct {
-	Field string // year | title | vote_average | added | size
+	Field string // year | title | vote_average | added | runtime | size
 	Desc  bool
 }
 
@@ -456,6 +463,16 @@ LEFT JOIN (
 	}
 	if f.YearTo > 0 {
 		addParam(`m.year <= ?`, f.YearTo)
+	}
+	switch f.RuntimeBucket {
+	case "0-1":
+		addClause(`m.runtime > 0 AND m.runtime <= 60`)
+	case "1-2":
+		addClause(`m.runtime > 60 AND m.runtime <= 120`)
+	case "2-3":
+		addClause(`m.runtime > 120 AND m.runtime <= 180`)
+	case "3-inf":
+		addClause(`m.runtime > 180`)
 	}
 	if f.Collection > 0 {
 		addParam(`m.collection_id = ?`, f.Collection)
@@ -582,6 +599,8 @@ LEFT JOIN (
 			orderBy = "m.vote_average " + dir + ", m.sort_title ASC"
 		case "added":
 			orderBy = "m.created_at " + dir
+		case "runtime":
+			orderBy = "m.runtime " + dir + ", m.sort_title ASC"
 		default:
 			orderBy = "m.sort_title ASC"
 		}

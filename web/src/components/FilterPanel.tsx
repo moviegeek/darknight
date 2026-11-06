@@ -1,4 +1,4 @@
-import { Eye, EyeOff, RotateCcw, Search, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Eye, EyeOff, RotateCcw, Search, X } from "lucide-react";
 import { cn, countryFlagEmoji, sourceLabel } from "../lib/format";
 import type { CountryCount, MovieFacets, MovieQuery } from "../api/types";
 
@@ -23,7 +23,16 @@ const SORTS: Array<{ value: string; label: string }> = [
   { value: "year", label: "年份" },
   { value: "vote_average", label: "评分" },
   { value: "added", label: "添加时间" },
+  { value: "runtime", label: "片长" },
 ];
+// Runtime histogram bands between axis points 0 · 1 · 2 · 3 · ∞ (hours).
+const RUNTIME_BUCKETS: Array<{ value: string; title: string }> = [
+  { value: "0-1", title: "≤ 1 小时" },
+  { value: "1-2", title: "1–2 小时" },
+  { value: "2-3", title: "2–3 小时" },
+  { value: "3-inf", title: "> 3 小时" },
+];
+const RUNTIME_AXIS_LABELS = ["0", "1", "2", "3", "∞"] as const;
 // Data-health buckets: describe a broken/incomplete local index, not the film.
 // "unmatched" is the union of the two problem classes below it plus file-less
 // movies (which the library hides entirely - they surface only in the
@@ -78,7 +87,8 @@ export function FilterPanel({
     query.no_chi_subtitle !== undefined ||
     query.match_issue !== undefined ||
     query.match_status !== undefined ||
-    query.watched !== undefined;
+    query.watched !== undefined ||
+    query.runtime_bucket !== undefined;
   // count(dimension, value) looks up the facet count for one chip; undefined
   // when counts are hidden or the facets request hasn't resolved yet, in
   // which case Chip renders without a "(N)" suffix.
@@ -261,6 +271,14 @@ export function FilterPanel({
         ))}
       </FilterGroup>
 
+      <FilterGroup label="片长">
+        <RuntimeHistogram
+          selected={query.runtime_bucket}
+          counts={facets?.runtime}
+          onSelect={(runtime_bucket) => set({ runtime_bucket, offset: 0 })}
+        />
+      </FilterGroup>
+
       <FilterGroup label="匹配状态">
         <div className="mb-1 text-[10px] uppercase tracking-wide text-ink-dim">数据健康</div>
         {MATCH_ISSUES.map((mi) => (
@@ -292,19 +310,40 @@ export function FilterPanel({
         ))}
       </FilterGroup>
 
-      <FilterGroup label="排序">
+      <FilterGroup
+        label="排序"
+        action={
+          <button
+            type="button"
+            title={query.desc ? "降序" : "升序"}
+            aria-label={query.desc ? "降序" : "升序"}
+            onClick={() => set({ desc: !query.desc })}
+            className="rounded p-0.5 text-ink-dim hover:bg-bg hover:text-ink"
+          >
+            {query.desc ? <ArrowDown className="h-3.5 w-3.5" /> : <ArrowUp className="h-3.5 w-3.5" />}
+          </button>
+        }
+      >
         {SORTS.map((s) => (
           <Chip
             key={s.value}
             active={query.sort === s.value}
-            onClick={() => set({ sort: s.value })}
+            onClick={() => {
+              // Runtime starts ascending; clicking it again flips direction.
+              if (s.value === "runtime") {
+                if (query.sort === "runtime") {
+                  set({ desc: !query.desc });
+                } else {
+                  set({ sort: "runtime", desc: false });
+                }
+                return;
+              }
+              set({ sort: s.value });
+            }}
           >
             {s.label}
           </Chip>
         ))}
-        <Chip active={!!query.desc} onClick={() => set({ desc: !query.desc })}>
-          {query.desc ? "降序" : "升序"}
-        </Chip>
       </FilterGroup>
 
       <div className="border-t border-border pt-3 text-xs text-ink-dim">
@@ -314,13 +353,95 @@ export function FilterPanel({
   );
 }
 
-function FilterGroup({ label, children }: { label: string; children: React.ReactNode }) {
+function FilterGroup({
+  label,
+  action,
+  children,
+}: {
+  label: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
   return (
     <div>
-      <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-dim">
-        {label}
+      <div className="mb-2 flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-ink-dim">
+        <span>{label}</span>
+        {action}
       </div>
       <div className="flex flex-wrap gap-1.5">{children}</div>
+    </div>
+  );
+}
+
+// RuntimeHistogram: clickable horizontal bar chart. Axis points are
+// 0 · 1 · 2 · 3 · ∞ (hours); each bar between two points is a selectable
+// runtime band whose height mirrors the facet count for that band.
+function RuntimeHistogram({
+  selected,
+  counts,
+  onSelect,
+}: {
+  selected?: string;
+  counts?: Record<string, number>;
+  onSelect: (value: string | undefined) => void;
+}) {
+  const values = RUNTIME_BUCKETS.map((b) => counts?.[b.value] ?? 0);
+  const max = Math.max(...values, 1);
+
+  return (
+    <div className="w-full basis-full">
+      <div className="flex h-16 items-end gap-0.5">
+        {RUNTIME_BUCKETS.map((b, i) => {
+          const n = values[i];
+          const active = selected === b.value;
+          const heightPct = Math.max((n / max) * 100, n > 0 ? 8 : 2);
+          return (
+            <button
+              key={b.value}
+              type="button"
+              title={`${b.title}${counts ? ` · ${n}` : ""}`}
+              aria-label={b.title}
+              aria-pressed={active}
+              onClick={() => onSelect(active ? undefined : b.value)}
+              className="group relative flex h-full min-w-0 flex-1 flex-col justify-end"
+            >
+              <span
+                className={cn(
+                  "w-full rounded-sm transition",
+                  active
+                    ? "bg-accent"
+                    : "bg-ink-dim/40 group-hover:bg-ink-dim/70"
+                )}
+                style={{ height: `${heightPct}%` }}
+              />
+            </button>
+          );
+        })}
+      </div>
+      <div className="relative mt-1 h-3">
+        <div className="absolute inset-x-0 top-0 border-t border-border" />
+        {RUNTIME_AXIS_LABELS.map((label, i) => {
+          const last = i === RUNTIME_AXIS_LABELS.length - 1;
+          return (
+            <span
+              key={label}
+              className={cn(
+                "absolute top-0.5 text-[10px] leading-none text-ink-dim",
+                i === 0 && "left-0",
+                last && "right-0",
+                i !== 0 && !last && "-translate-x-1/2"
+              )}
+              style={
+                i === 0 || last
+                  ? undefined
+                  : { left: `${(i / (RUNTIME_AXIS_LABELS.length - 1)) * 100}%` }
+              }
+            >
+              {label}
+            </span>
+          );
+        })}
+      </div>
     </div>
   );
 }

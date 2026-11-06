@@ -220,6 +220,8 @@ export interface MovieFacets {
   match_issue: Record<string, number>;
   // Match state machine counts (matched/pending/unmatched/manual).
   match_status: Record<string, number>;
+  // Runtime histogram bands: "0-1" | "1-2" | "2-3" | "3-inf".
+  runtime: Record<string, number>;
 }
 
 // Query params for the movies list. Empty values are omitted.
@@ -228,6 +230,8 @@ export interface MovieQuery {
   genre?: string;
   year_from?: number;
   year_to?: number;
+  // Runtime histogram band: "0-1" | "1-2" | "2-3" | "3-inf".
+  runtime_bucket?: string;
   resolution?: string;
   source?: string;
   codec?: string;

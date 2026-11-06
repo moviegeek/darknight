@@ -31,11 +31,11 @@ type API struct {
 	Enricher *metadata.Enricher
 	// Matcher powers the manual-match endpoints (live candidate search and
 	// batch rematch). Nil when TMDB is not configured.
-	Matcher  *matcher.Matcher
+	Matcher *matcher.Matcher
 	// TraktSync imports trakt.tv watch status when Trakt credentials are
 	// configured. Nil = feature hidden.
 	TraktSync *traktsync.Syncer
-	Logger   *slog.Logger
+	Logger    *slog.Logger
 
 	mu       sync.Mutex
 	scanLock map[int64]struct{} // libraries currently being scanned
@@ -310,6 +310,7 @@ func parseMovieFilter(r *http.Request) store.MovieFilter {
 		Genres:           q["genre"],
 		YearFrom:         queryInt(r, "year_from", 0),
 		YearTo:           queryInt(r, "year_to", 0),
+		RuntimeBucket:    q.Get("runtime_bucket"),
 		Resolution:       q.Get("resolution"),
 		Source:           q.Get("source"),
 		VideoCodec:       q.Get("codec"),
@@ -413,6 +414,9 @@ var (
 	// facetMatchStatuses are the state-machine values. Use a single-select chip
 	// group in the UI: pick one to filter to that bucket.
 	facetMatchStatuses = []string{"matched", "pending", "unmatched", "manual"}
+	// facetRuntimeBuckets mirror the 片长 histogram bars: (0,1h], (1h,2h],
+	// (2h,3h], (3h,+∞).
+	facetRuntimeBuckets = []string{"0-1", "1-2", "2-3", "3-inf"}
 )
 
 // movieFacets reports, for the current filter selection, how many movies
@@ -511,6 +515,11 @@ func (a *API) movieFacets(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	runtime, err := countEach(facetRuntimeBuckets, func(f *store.MovieFilter, v string) { f.RuntimeBucket = v })
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"resolution":        resolution,
@@ -525,6 +534,7 @@ func (a *API) movieFacets(w http.ResponseWriter, r *http.Request) {
 		"watched":           watched,
 		"match_issue":       matchIssue,
 		"match_status":      matchStatus,
+		"runtime":           runtime,
 	})
 }
 
@@ -763,7 +773,7 @@ func (a *API) enrichCollection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"refreshed": refreshed,
+		"refreshed":  refreshed,
 		"collection": col,
 	})
 }

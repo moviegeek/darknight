@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { cn, resolutionLabel, movieTitleLines, movieCountryCodes, countryFlagEmoji } from "../lib/format";
+import {
+  cn,
+  formatDuration,
+  resolutionLabel,
+  movieTitleLines,
+  movieCountryCodes,
+  countryFlagEmoji,
+} from "../lib/format";
 import type { MovieListItem } from "../api/types";
 import { tmdbImage } from "../api/client";
 
@@ -166,6 +173,7 @@ export function MovieCard({ movie, size = 160 }: { movie: MovieListItem; size?: 
         )}
         <div className="mt-0.5 flex items-center gap-2 text-xs text-ink-muted">
           {movie.year ? <span>{movie.year}</span> : null}
+          {movie.runtime > 0 && <span>{formatDuration(movie.runtime * 60)}</span>}
           {movie.vote_average > 0 && (
             <span className="text-amber-400">★ {movie.vote_average.toFixed(1)}</span>
           )}
