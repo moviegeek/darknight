@@ -34,18 +34,18 @@ type Movie struct {
 	VoteAverage      float64 `json:"vote_average"`
 	VoteCount        int     `json:"vote_count"`
 	CollectionID     int64   `json:"collection_id"`
-	Country          string  `json:"country"`          // primary production country (ISO or name)
-	Countries        string  `json:"countries"`        // all production countries, comma-separated ISO codes
+	Country          string  `json:"country"`           // primary production country (ISO or name)
+	Countries        string  `json:"countries"`         // all production countries, comma-separated ISO codes
 	OriginalLanguage string  `json:"original_language"` // ISO 639-1 code from TMDB
 	// Match state machine (migration 009). matched = auto-accepted by the
 	// matcher or confirmed by enrichment; manual = human-picked tmdb_id, never
 	// overwritten by automatic matching; pending = candidate(s) awaiting
 	// review; unmatched = no candidate scored high enough.
-	MatchStatus    string `json:"match_status"` // matched | pending | unmatched | manual
-	MatchScore     int    `json:"match_score"`
-	MatchAttempts  int    `json:"match_attempts"`
-	LastMatchAt    int64  `json:"last_match_at"`
-	FailReason     string `json:"fail_reason"`
+	MatchStatus   string `json:"match_status"` // matched | pending | unmatched | manual
+	MatchScore    int    `json:"match_score"`
+	MatchAttempts int    `json:"match_attempts"`
+	LastMatchAt   int64  `json:"last_match_at"`
+	FailReason    string `json:"fail_reason"`
 	// MatchCandidates is the JSON-encoded candidate list stored while the row
 	// is pending review (see store.SetMatchCandidates).
 	MatchCandidates string `json:"match_candidates,omitempty"`
@@ -148,15 +148,15 @@ type MovieFile struct {
 	FrameRate     float64 `json:"frame_rate"`
 	Width         int     `json:"width"`
 	Height        int     `json:"height"`
-	Container           string `json:"container"`
+	Container     string  `json:"container"`
 	// FFProbeJSON is the verbatim ffprobe JSON stdout cached for this file,
 	// so future media-info fields can be backfilled without re-probing.
 	// Empty when not yet cached (disc releases are never probed).
-	FFProbeJSON    string `json:"ffprobe_json"`
-	FFProbeVersion int    `json:"ffprobe_version"` // matches ffprobe.ProbeVersion when cached; 0 = none
-	FFProbeAt      int64  `json:"ffprobe_at"`      // unix ts when the JSON was captured
+	FFProbeJSON         string `json:"ffprobe_json"`
+	FFProbeVersion      int    `json:"ffprobe_version"` // matches ffprobe.ProbeVersion when cached; 0 = none
+	FFProbeAt           int64  `json:"ffprobe_at"`      // unix ts when the JSON was captured
 	NFOPath             string `json:"nfo_path"`
-	SubtitleLanguages   string `json:"subtitle_languages"`    // comma-separated, e.g. "chi,eng"
+	SubtitleLanguages   string `json:"subtitle_languages"` // comma-separated, e.g. "chi,eng"
 	HasExternalSubtitle bool   `json:"has_external_subtitle"`
 	ScannedAt           int64  `json:"scanned_at"`
 	CreatedAt           int64  `json:"created_at"`
@@ -197,6 +197,16 @@ type WatchStatus struct {
 	LastPlayedAt int64   `json:"last_played_at"`
 	Rating       int     `json:"rating"`
 	UpdatedAt    int64   `json:"updated_at"`
+}
+
+// WatchPlay is one viewing of a movie (manual mark or backfilled from status).
+type WatchPlay struct {
+	ID        int64  `json:"id"`
+	MovieID   int64  `json:"movie_id"`
+	WatchedAt int64  `json:"watched_at"` // unix seconds
+	HasTime   bool   `json:"has_time"`   // false = date only
+	Source    string `json:"source"`     // manual | trakt | status
+	CreatedAt int64  `json:"created_at"`
 }
 
 // UserCollection is a user-curated themed album of movies.

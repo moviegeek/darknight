@@ -72,6 +72,9 @@ func (a *API) Router() http.Handler {
 	r.Get("/movies/{id}/cast", a.getMovieCast)
 	r.Get("/movies/{id}/files", a.listMovieFiles)
 	r.Get("/movies/{id}/files/{fid}", a.getMovieFile)
+	r.Get("/movies/{id}/watches", a.listWatches)
+	r.Post("/movies/{id}/watches", a.addWatch)
+	r.Delete("/movies/{id}/watches/{wid}", a.deleteWatch)
 
 	r.Get("/matches/pending", a.listPendingMatches)
 	r.Get("/movies/{id}/candidates", a.movieCandidates)
@@ -358,6 +361,12 @@ func (a *API) listMovies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	watchedIDs, err := a.Store.WatchedMovieIDs(r.Context())
+	if err != nil {
+		a.Logger.Warn("list watched ids", "err", err)
+		watchedIDs = map[int64]bool{}
+	}
+
 	// enrich each movie with its best file summary
 	items := make([]movieListItem, 0, len(movies))
 	for _, m := range movies {
@@ -365,7 +374,12 @@ func (a *API) listMovies(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			a.Logger.Warn("list files for movie", "id", m.ID, "err", err)
 		}
-		item := movieListItem{Movie: m, HasFiles: len(files) > 0, FileCount: len(files)}
+		item := movieListItem{
+			Movie:     m,
+			HasFiles:  len(files) > 0,
+			FileCount: len(files),
+			Watched:   watchedIDs[m.ID],
+		}
 		for _, f := range files {
 			if item.BestResolution == "" {
 				// first file is the best (ordered by resolution/size)
@@ -591,13 +605,34 @@ func (a *API) getMovie(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// attach genres + collection so the detail page can render them without
+	// attach genres + watch summary so the detail page can render them without
 	// extra round-trips.
 	genres, _ := a.Store.ListMovieGenres(r.Context(), id)
+	plays, _ := a.Store.ListWatchHistory(r.Context(), id)
+	if plays == nil {
+		plays = []model.WatchPlay{}
+	}
+	ws, _ := a.Store.GetWatchStatus(r.Context(), id)
+	watched := ws != nil && ws.Status == "watched"
+	var lastWatched int64
+	if ws != nil {
+		lastWatched = ws.LastPlayedAt
+	}
 	resp := struct {
 		*model.Movie
-		Genres []model.Genre `json:"genres"`
-	}{Movie: m, Genres: genres}
+		Genres        []model.Genre     `json:"genres"`
+		Watched       bool              `json:"watched"`
+		WatchCount    int               `json:"watch_count"`
+		LastWatchedAt int64             `json:"last_watched_at"`
+		Watches       []model.WatchPlay `json:"watches"`
+	}{
+		Movie:         m,
+		Genres:        genres,
+		Watched:       watched,
+		WatchCount:    len(plays),
+		LastWatchedAt: lastWatched,
+		Watches:       plays,
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 

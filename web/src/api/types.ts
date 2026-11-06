@@ -86,10 +86,25 @@ export interface CollectionPart {
   local_movie_id: number | null;
 }
 
+// One viewing of a movie. id=0 with source="status" is a synthetic entry for
+// Trakt-synced watches that have no watch_history rows yet.
+export interface WatchPlay {
+  id: number;
+  movie_id: number;
+  watched_at: number; // unix seconds
+  has_time: boolean;
+  source: string; // manual | trakt | status
+  created_at: number;
+}
+
 // MovieDetail is the response shape of GET /api/movies/:id - a Movie plus the
-// genres + collection the detail page renders inline.
+// genres, watch summary, and history the detail page renders inline.
 export interface MovieDetail extends Movie {
   genres: Genre[];
+  watched: boolean;
+  watch_count: number;
+  last_watched_at: number;
+  watches: WatchPlay[];
 }
 
 // Cast / crew returned by GET /api/movies/:id/cast.

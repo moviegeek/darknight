@@ -20,6 +20,7 @@ import type {
   SqlResult,
   TableInfo,
   CandidatesResponse,
+  WatchPlay,
 } from "./types";
 
 export async function http<T>(path: string, init?: RequestInit): Promise<T> {
@@ -78,6 +79,19 @@ export const listMovieFiles = (id: number) =>
   http<MovieFile[]>(`/api/movies/${id}/files`);
 export const getMovieFile = (movieId: number, fileId: number) =>
   http<MovieFileDetail>(`/api/movies/${movieId}/files/${fileId}`);
+
+// ----- watch history -----
+export const listWatches = (movieId: number) =>
+  http<WatchPlay[]>(`/api/movies/${movieId}/watches`);
+export const addWatch = (movieId: number, watchedAt: number, hasTime: boolean) =>
+  http<WatchPlay>(`/api/movies/${movieId}/watches`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ watched_at: watchedAt, has_time: hasTime }),
+  });
+// wid "latest" (or 0) removes the most recent play; otherwise a history id.
+export const deleteWatch = (movieId: number, wid: number | "latest" = "latest") =>
+  http<void>(`/api/movies/${movieId}/watches/${wid}`, { method: "DELETE" });
 
 // ----- genres / misc -----
 export const listGenres = () => http<Genre[]>(`/api/genres`);

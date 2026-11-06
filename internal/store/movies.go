@@ -700,11 +700,11 @@ func (s *Store) GetMovie(ctx context.Context, id int64) (*model.Movie, error) {
 // DeleteMovie removes a movie row plus its dependent index rows, in one
 // transaction:
 //
-//   - movie_genres / movie_credits / watch_status / user_collection_items
-//     rows go with the movie (the schema declares these ON DELETE CASCADE,
-//     but buildDSN's _pragma settings never actually applied - only the last
-//     url.Values.Set survives - so SQLite enforces nothing; the cleanup is
-//     explicit)
+//   - movie_genres / movie_credits / watch_status / watch_history /
+//     user_collection_items rows go with the movie (the schema declares these
+//     ON DELETE CASCADE, but buildDSN's _pragma settings never actually
+//     applied - only the last url.Values.Set survives - so SQLite enforces
+//     nothing; the cleanup is explicit)
 //   - movie_files rows are DETACHED (movie_id -> NULL), not deleted: they
 //     return to the unmatched pool and re-seed on the next scan
 //
@@ -717,7 +717,7 @@ func (s *Store) DeleteMovie(ctx context.Context, id int64) error {
 	defer func() { _ = tx.Rollback() }()
 
 	for _, table := range []string{
-		"movie_genres", "movie_credits", "watch_status", "user_collection_items",
+		"movie_genres", "movie_credits", "watch_status", "watch_history", "user_collection_items",
 	} {
 		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM `+table+` WHERE movie_id = ?`, id); err != nil {

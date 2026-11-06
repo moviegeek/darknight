@@ -12,6 +12,7 @@ import {
 import type { AudioTrack, CastResponse, MovieFile, MovieFileDetail, Subtitle } from "../api/types";
 import { ManualMatchButton } from "../components/ManualMatch";
 import { UploadSubtitlesButton } from "../components/UploadSubtitles";
+import { WatchControls } from "../components/WatchControls";
 import {
   cn,
   audioChannelCountLabel,
@@ -108,8 +109,9 @@ export default function MoviePage() {
                 </h1>
                 {secondary && <p className="mt-1 text-base text-ink-muted">{secondary}</p>}
               </div>
-              <div className="shrink-0 pt-1">
+              <div className="flex shrink-0 flex-col items-end gap-2 pt-1">
                 <ManualMatchButton movie={movie} files={files} />
+                <WatchControls movie={movie} />
               </div>
             </div>
             {!movie.tmdb_id && (
