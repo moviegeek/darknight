@@ -1,7 +1,7 @@
 # darknight — moviegeek media library
-.PHONY: all backend frontend dev build test vet fmt clean
+.PHONY: all backend frontend build test vet fmt clean
 
-# Dev defaults. Override on the command line, e.g. `make dev DARKNIGHT_DB=/tmp/x.db`.
+# Dev defaults. Override on the command line, e.g. `make backend-dev DARKNIGHT_DB=/tmp/x.db`.
 DARKNIGHT_DB ?= .data/darknight.db
 DARKNIGHT_ADDR ?= :8080
 
@@ -12,7 +12,7 @@ all: backend frontend
 backend:
 	go build -o bin/darknight ./cmd/darknight
 
-dev: backend
+backend-dev: backend
 	DARKNIGHT_DB=$(DARKNIGHT_DB) DARKNIGHT_ADDR=$(DARKNIGHT_ADDR) ./bin/darknight
 
 test:
